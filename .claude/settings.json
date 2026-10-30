@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m venv venv -q)",
+      "Bash(venv/Scripts/python -m pip install -q pandas matplotlib)",
+      "Bash(venv/Scripts/python \"C:/Users/Sky/Documents/GitHub/NSCom03/plot.py\" fake.csv)",
+      "Bash(python -m venv venv)",
+      "Bash(rm -f *.png *.csv)",
+      "Bash(venv/Scripts/python -c ' *)"
+    ]
+  }
+}
