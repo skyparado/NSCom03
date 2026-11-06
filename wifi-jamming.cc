@@ -96,8 +96,8 @@ main(int argc, char* argv[])
 {
     uint32_t nStations = 5;
     double jammerDistance = 10.0; // m from the AP
-    bool jammer = true;
-    bool channelSwitch = false; // T5: victim BSS moves to channel 6, jammer stays on 1
+    std::string jammerStr = "on";
+    std::string channelSwitchStr = "off"; // T5: victim BSS moves to channel 6, jammer stays on 1
     uint32_t seed = 1;
     double jammerPowerDbm = 16.0206; // ns-3 default WifiPhy TxPower
     double simTime = 60.0;           // traffic duration, s
@@ -108,13 +108,20 @@ main(int argc, char* argv[])
     CommandLine cmd(__FILE__);
     cmd.AddValue("nStations", "Number of stations", nStations);
     cmd.AddValue("jammerDistance", "Jammer distance from the AP (m)", jammerDistance);
-    cmd.AddValue("jammer", "Enable the constant jammer (on/off)", jammer);
-    cmd.AddValue("channelSwitch", "Move AP and stations to channel 6 (on/off)", channelSwitch);
+    cmd.AddValue("jammer", "Enable the constant jammer (on/off)", jammerStr);
+    cmd.AddValue("channelSwitch", "Move AP and stations to channel 6 (on/off)", channelSwitchStr);
     cmd.AddValue("seed", "Run number for the RNG", seed);
     cmd.AddValue("jammerPower", "Jammer Tx power (dBm), for calibration", jammerPowerDbm);
     cmd.AddValue("simTime", "Traffic duration (s)", simTime);
     cmd.AddValue("out", "CSV file to append the result rows to", out);
     cmd.Parse(argc, argv);
+
+    // CommandLine parses bool as true/false/1/0, not on/off, so take these as strings.
+    NS_ABORT_MSG_IF(jammerStr != "on" && jammerStr != "off", "jammer must be on or off");
+    NS_ABORT_MSG_IF(channelSwitchStr != "on" && channelSwitchStr != "off",
+                    "channelSwitch must be on or off");
+    bool jammer = jammerStr == "on";
+    bool channelSwitch = channelSwitchStr == "on";
 
     RngSeedManager::SetSeed(1);
     RngSeedManager::SetRun(seed);
