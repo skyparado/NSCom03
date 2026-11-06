@@ -23,7 +23,10 @@ python3 run_all.py --ns3-dir ~/ns-3-dev --out results.csv   # add --sim-time 5 f
 python3 plot.py results.csv
 ```
 
-Calibrate first: if near vs far looks the same, change `--jammerPower` (dBm, default 16.02 = ns-3 default Tx power).
+The jammer power is calibrated to **4 dBm** (`run_all.py --jammer-power`). At the ns-3 default
+(16 dBm) the jammer denies service out to ~80 m, so distance makes no difference indoors; at 4 dBm
+its radius is ~40 m, giving a loss-vs-distance gradient (10 m ~100% → 50 m ~0%). Plot it with
+`python3 plot_distance.py results_distance.csv`.
 
 ## Outputs
 
@@ -38,6 +41,7 @@ Calibrate first: if near vs far looks the same, change `--jammerPower` (dBm, def
 | `t5_switch.png` | T5, all scenarios incl. far |
 | `l1_l2.png` | SINR, retries per packet, CCA busy time (Objective 6) |
 | `per_station.png` | loss and SINR vs each station's distance to the jammer (RQ3) |
+| `distance_gradient.png` | RQ3: packet loss and throughput vs jammer distance (10-60 m) |
 
 ## Modeling notes (state these in the paper)
 
