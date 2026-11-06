@@ -54,9 +54,12 @@ def plot(df, scenarios, metrics, title, fname, kind="bar"):
         ax.set_xlabel("Number of stations")
         ax.set_ylabel(name)
         ax.grid(axis="y", alpha=0.3)
-    axes[0].legend(frameon=False, fontsize=8)
+    # Legend below the plots so it never covers bars or the "none delivered" labels.
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=len(scenarios),
+               frameon=False, fontsize=9, bbox_to_anchor=(0.5, 0))
     fig.suptitle(title)
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0.08, 1, 1])
     fig.savefig(fname, dpi=150)
     plt.close(fig)
     print("wrote", fname)
