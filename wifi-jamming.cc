@@ -97,9 +97,10 @@ main(int argc, char* argv[])
     uint32_t nStations = 5;
     double jammerDistance = 10.0; // m from the AP
     std::string jammerStr = "on";
-    std::string channelSwitchStr = "off"; // T5: victim BSS moves to channel 6, jammer stays on 1
+    std::string channelSwitchStr = "off"; // T5: victim BSS moves to channel 3, jammer stays on 1
     uint32_t seed = 1;
     double jammerPowerDbm = 16.0206; // ns-3 default WifiPhy TxPower
+    double jammerDuty = 1.0;         // fraction of time the jammer is on (1.0 = constant)
     double simTime = 60.0;           // traffic duration, s
     uint32_t pktSize = 1024;         // bytes
     double rateBps = 1e6;            // per station
@@ -112,6 +113,7 @@ main(int argc, char* argv[])
     cmd.AddValue("channelSwitch", "Move AP and stations to channel 6 (on/off)", channelSwitchStr);
     cmd.AddValue("seed", "Run number for the RNG", seed);
     cmd.AddValue("jammerPower", "Jammer Tx power (dBm), for calibration", jammerPowerDbm);
+    cmd.AddValue("jammerDuty", "Jammer on-fraction 0..1 (1.0 = constant)", jammerDuty);
     cmd.AddValue("simTime", "Traffic duration (s)", simTime);
     cmd.AddValue("out", "CSV file to append the result rows to", out);
     cmd.Parse(argc, argv);
@@ -155,12 +157,17 @@ main(int argc, char* argv[])
     // Free-space loss at 1 m for 2.4 GHz; the default (46.68 dB) is for 5.15 GHz.
     loss->SetAttribute("ReferenceLoss", DoubleValue(40.05));
     channel->AddPropagationLossModel(loss);
+    // Multipath fading on top of path loss: makes per-frame SINR vary, so seeds differ and the
+    // jammer's edge is a gradient instead of a cliff (default m: 1.5/0.75/0.75 by distance).
+    channel->AddPropagationLossModel(CreateObject<NakagamiPropagationLossModel>());
     channel->SetPropagationDelayModel(CreateObject<ConstantSpeedPropagationDelayModel>());
 
     SpectrumWifiPhyHelper phy;
     phy.SetChannel(channel);
+    // Switch to channel 3, which still half-overlaps the jammer's channel 1 (2.4 GHz has no
+    // free non-overlapping channel here), so mitigation is partial and realistic, not total escape.
     phy.Set("ChannelSettings",
-            StringValue(channelSwitch ? "{6, 20, BAND_2_4GHZ, 0}" : "{1, 20, BAND_2_4GHZ, 0}"));
+            StringValue(channelSwitch ? "{3, 20, BAND_2_4GHZ, 0}" : "{1, 20, BAND_2_4GHZ, 0}"));
 
     WifiHelper wifi;
     wifi.SetStandard(WIFI_STANDARD_80211n);
@@ -191,7 +198,7 @@ main(int argc, char* argv[])
     wg.SetChannel(channel);
     wg.SetTxPowerSpectralDensity(psd);
     wg.SetPhyAttribute("Period", TimeValue(Seconds(0.1)));
-    wg.SetPhyAttribute("DutyCycle", DoubleValue(1.0));
+    wg.SetPhyAttribute("DutyCycle", DoubleValue(jammerDuty));
     NetDeviceContainer jamDev = wg.Install(jammerNode);
     if (jammer)
     {
@@ -277,7 +284,7 @@ main(int argc, char* argv[])
     std::ofstream f(out, std::ios::app);
     if (newFile)
     {
-        f << "nStations,jammer,jammerDistance,channelSwitch,seed,station,distToJammer,"
+        f << "nStations,jammer,jammerDistance,channelSwitch,jammerDuty,seed,station,distToJammer,"
              "txPackets,rxPackets,throughputMbps,lossRatio,meanDelayMs,sinrDb,retries,drops,"
              "ccaBusy\n";
     }
@@ -287,6 +294,7 @@ main(int argc, char* argv[])
     {
         double dist = staNodes.Get(i)->GetObject<MobilityModel>()->GetDistanceFrom(jamPos);
         f << nStations << ',' << jammer << ',' << jammerDistance << ',' << channelSwitch << ','
+          << jammerDuty << ','
           << seed << ',' << i << ',' << dist << ',' << tx[i] << ',' << rx[i] << ','
           << rx[i] * pktSize * 8.0 / simTime / 1e6 << ','                   // application bits
           << (tx[i] ? double(tx[i] - rx[i]) / tx[i] : nan) << ','           // loss ratio

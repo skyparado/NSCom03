@@ -24,6 +24,8 @@ out = pathlib.Path(args.out).resolve()
 out.unlink(missing_ok=True)
 dist_out = out.with_name(out.stem + "_distance" + out.suffix)
 dist_out.unlink(missing_ok=True)
+duty_out = out.with_name(out.stem + "_duty" + out.suffix)
+duty_out.unlink(missing_ok=True)
 
 PW = args.jammer_power
 # near = 10 m (inside the jammer's radius), far = 40 m (at its edge).
@@ -35,19 +37,23 @@ configs = [
     ("on", "on", 10),    # T5 near
     ("on", "on", 40),    # T5 far
 ]
-runs = [(c, n, s, out) for c in configs for n in (1, 5, 10) for s in range(1, args.seeds + 1)]
+# each run: (jammer, switch, dist, duty), nStations, seed, target CSV.
+runs = [(c + (1.0,), n, s, out) for c in configs for n in (1, 5, 10) for s in range(1, args.seeds + 1)]
 
 # RQ3 distance sweep: jammed only, N=5, across the indoor range -> results_distance.csv.
-sweep = [(("on", "off", d), 5, s, dist_out)
+runs += [(("on", "off", d, 1.0), 5, s, dist_out)
          for d in (10, 20, 30, 40, 50, 60) for s in range(1, args.seeds + 1)]
-runs += sweep
+
+# Intensity sweep: near jammer, N=5, varying on-fraction -> results_duty.csv (the dose-response curve).
+runs += [(("on", "off", 10, duty), 5, s, duty_out)
+         for duty in (0.0, 0.1, 0.25, 0.5, 0.75, 1.0) for s in range(1, args.seeds + 1)]
 
 subprocess.run(["./ns3", "build"], cwd=args.ns3_dir, check=True)
-for i, ((jammer, switch, dist), n, seed, target) in enumerate(runs, 1):
+for i, ((jammer, switch, dist, duty), n, seed, target) in enumerate(runs, 1):
     prog = (f"wifi-jamming --nStations={n} --jammerDistance={dist} --jammer={jammer} "
-            f"--channelSwitch={switch} --jammerPower={PW} --seed={seed} "
+            f"--channelSwitch={switch} --jammerPower={PW} --jammerDuty={duty} --seed={seed} "
             f"--simTime={args.sim_time} --out={target}")
     print(f"[{i}/{len(runs)}] {prog}", flush=True)
     subprocess.run(["./ns3", "run", "--no-build", prog], cwd=args.ns3_dir, check=True)
 
-print(f"Wrote {out} and {dist_out}")
+print(f"Wrote {out}, {dist_out} and {duty_out}")

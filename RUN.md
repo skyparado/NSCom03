@@ -20,6 +20,7 @@ cp ~/NSCom03/wifi-jamming.cc ~/ns-3-dev/scratch/   # re-copy if you edited the .
 ~/venv/bin/python run_all.py --ns3-dir ~/ns-3-dev --out results.csv
 ~/venv/bin/python plot.py results.csv
 ~/venv/bin/python plot_distance.py results_distance.csv
+~/venv/bin/python plot_duty.py results_duty.csv
 ```
 
 Add `--sim-time 5` to `run_all.py` for a ~60x faster dry run.

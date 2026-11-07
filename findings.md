@@ -1,20 +1,33 @@
-# Findings (full run, simTime=60, 10 seeds)
+# Why the data changed (addressing "the results had no real meaning")
 
-## Channel-switch recovery (recovery.csv)
+## What was wrong before
 
-| jammer | nStations | throughput recovery | loss recovery |
-|--------|-----------|---------------------|---------------|
-| near   | 1 / 5 / 10 | 100% | 100% |
-| far    | 5 / 10     | 100% | 100% |
-| far    | 1          | NaN  | NaN  |
+The old model produced an all-or-nothing step function: every run was either total kill
+(`rx=0`) or perfect delivery (`rx=tx`), nothing in between.
 
-- **Near jammer (10 m):** channel switching to channel 6 fully restores service
-  (100% recovery) at every station count — the key RQ4 mitigation result.
-- **Far jammer (40 m):** at 1 station the jammer causes no measurable damage, so
-  "percent recovered" is 0/0 = NaN. Report as "no measurable damage," not a gap.
+1. **Recovery was 100% by construction.** Channel switching moved the BSS to channel 6, which
+   does not overlap the jammer's channel 1 at all — so "mitigation" was total escape, trivially
+   perfect for every distance and station count. Nothing was measured.
+2. **The jammer was always-on at full power**, so inside its radius it killed every frame and
+   outside it killed none — a cliff, not a curve.
+3. **Seeds were meaningless.** No fading, fixed positions, fixed rate → every seed gave the
+   identical `tx`/`rx`. "10 seeds" implied statistics that were really one deterministic point.
 
-## Distance gradient (results_distance.csv)
+## What was changed
 
-At 60 m the jammer has no effect: `tx == rx` (full delivery). This confirms the
-4 dBm calibration gives a ~40 m effective radius, so loss falls off with distance
-(10 m ~100% loss down to ~0% past 50 m), as intended for RQ3.
+- **Nakagami multipath fading** added on top of log-distance path loss → per-frame SINR now
+  varies, so seeds actually differ (genuine mean ± std) and the jammer's edge is a gradient.
+- **`--jammerDuty`** parameter (jammer on-fraction), swept 0 → 100% near the AP → a dose-response
+  curve of throughput and loss vs jamming intensity (`duty_response.png`). This is the headline
+  "things that matter" result: loss rises roughly in proportion to the on-fraction.
+- **Channel switch now targets channel 3**, which half-overlaps the jammer's channel 1, so
+  recovery is *partial and measured* (< 100%), not a foregone conclusion — a realistic 2.4 GHz
+  scenario where no clean non-overlapping channel is free.
+
+## What to expect now (fill in with your actual numbers after the full run)
+
+- `duty_response.png`: loss climbs from ~0% at duty 0 toward ~100% at duty 1; throughput falls
+  in step. A sloped line, not a jump.
+- `distance_gradient.png`: a smooth loss-vs-distance curve with real error bars (fading adds spread).
+- `recovery.csv`: channel-switch recovery now below 100%, and differing by distance / station
+  count — quantifying how much a half-overlapping channel actually buys you.
