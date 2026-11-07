@@ -24,16 +24,23 @@ The old model produced an all-or-nothing step function: every run was either tot
   recovery is *partial and measured* (< 100%), not a foregone conclusion — a realistic 2.4 GHz
   scenario where no clean non-overlapping channel is free.
 
-## What the 5 s dry run showed (replace with 60 s numbers for the paper)
+## 60 s run results (10 seeds, N = 5 near unless noted)
 
-- **Distance gradient (`distance_gradient.png`)** — now a clean curve with seed-to-seed spread:
-  10 m ~95-100% loss, 20 m ~50%, 30 m ~10%, 40 m ~1%, 50 m+ 0%.
-- **Channel switch (`recovery.csv`)** — partial, not 100%: near N=5 goes from ~3% delivered
-  (jammed) to ~20-29% delivered (switched). A half-overlapping channel helps but does not cure.
-- **Duty cycle (`duty_response.png`)** — a *threshold*, not a straight line: loss stays small
-  until the jammer is nearly continuous, then collapses near duty 1.0. The traffic is light
-  (1 Mbps/station), so during the jammer's OFF gaps the backlog drains; only near-continuous
-  jamming denies service. The sweep samples 0.9/0.95/0.99/1.0 to show the knee.
+- **Distance gradient (`distance_gradient.png`)** — a clean curve with seed spread:
+  10 m ~96% loss, 20 m ~43%, 30 m ~8%, 40 m ~0.1%, 50 m+ 0%.
+- **Duty cycle (`duty_response.png`)** — a *threshold*, not a straight line:
+  duty 0.5 ~2% loss, 0.8 ~0.4%, 0.9 ~16%, 0.95 ~60%, 0.99 ~90%, 1.0 ~96%. Traffic is light
+  (1 Mbps/station) so the backlog drains in the jammer's OFF gaps; only near-continuous jamming
+  denies service. The knee between 0.9 and 1.0 is the headline result.
+- **Mitigation (`mitigation.png`)** — channel switching helps only if the new channel is clean:
+  no switch ~4% delivered (~96% loss); switch to the half-overlapping ch 3 ~24% delivered
+  (~76% loss) — partial; switch to the clean ch 6 ~full recovery (no spectral overlap with the
+  jammer). The contrast is the point: escaping the jammer's band works, dodging to an adjacent
+  (still-overlapping) channel barely helps.
 
-This is the finding to lead with: jamming damage depends on *distance* (smooth) and on the
-*jammer's continuity* (threshold), and channel switching recovers only part of the loss.
+## Known limitations (state these in the paper)
+
+- Right at the jammer (10 m, continuous) the outcome is nearly bimodal: fading decides whether a
+  seed is fully denied (rx = 0) or scrapes ~8% through, so the mean there has wide error bars.
+- One jammer power (4 dBm) and one traffic rate (1 Mbps/station): the duty threshold would shift
+  left under heavier load. SINR/delay are missing wherever nothing got through (rx = 0).

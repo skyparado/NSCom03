@@ -97,7 +97,8 @@ main(int argc, char* argv[])
     uint32_t nStations = 5;
     double jammerDistance = 10.0; // m from the AP
     std::string jammerStr = "on";
-    std::string channelSwitchStr = "off"; // T5: victim BSS moves to channel 3, jammer stays on 1
+    std::string channelSwitchStr = "off"; // T5: victim BSS moves to switchChannel, jammer stays on 1
+    uint32_t switchChannel = 3;           // target channel when switching: 3 half-overlaps ch 1, 6/11 are clean
     uint32_t seed = 1;
     double jammerPowerDbm = 16.0206; // ns-3 default WifiPhy TxPower
     double jammerDuty = 1.0;         // fraction of time the jammer is on (1.0 = constant)
@@ -110,7 +111,8 @@ main(int argc, char* argv[])
     cmd.AddValue("nStations", "Number of stations", nStations);
     cmd.AddValue("jammerDistance", "Jammer distance from the AP (m)", jammerDistance);
     cmd.AddValue("jammer", "Enable the constant jammer (on/off)", jammerStr);
-    cmd.AddValue("channelSwitch", "Move AP and stations to channel 6 (on/off)", channelSwitchStr);
+    cmd.AddValue("channelSwitch", "Move AP and stations off channel 1 (on/off)", channelSwitchStr);
+    cmd.AddValue("switchChannel", "Target channel when switching (3=overlap, 6/11=clean)", switchChannel);
     cmd.AddValue("seed", "Run number for the RNG", seed);
     cmd.AddValue("jammerPower", "Jammer Tx power (dBm), for calibration", jammerPowerDbm);
     cmd.AddValue("jammerDuty", "Jammer on-fraction 0..1 (1.0 = constant)", jammerDuty);
@@ -164,10 +166,12 @@ main(int argc, char* argv[])
 
     SpectrumWifiPhyHelper phy;
     phy.SetChannel(channel);
-    // Switch to channel 3, which still half-overlaps the jammer's channel 1 (2.4 GHz has no
-    // free non-overlapping channel here), so mitigation is partial and realistic, not total escape.
-    phy.Set("ChannelSettings",
-            StringValue(channelSwitch ? "{3, 20, BAND_2_4GHZ, 0}" : "{1, 20, BAND_2_4GHZ, 0}"));
+    // Switch off channel 1 to switchChannel: channel 3 half-overlaps the jammer (partial relief),
+    // channel 6/11 are clean (full escape). Comparing them shows what the mitigation actually buys.
+    std::string chSettings = channelSwitch
+                                 ? "{" + std::to_string(switchChannel) + ", 20, BAND_2_4GHZ, 0}"
+                                 : "{1, 20, BAND_2_4GHZ, 0}";
+    phy.Set("ChannelSettings", StringValue(chSettings));
 
     WifiHelper wifi;
     wifi.SetStandard(WIFI_STANDARD_80211n);
@@ -284,7 +288,7 @@ main(int argc, char* argv[])
     std::ofstream f(out, std::ios::app);
     if (newFile)
     {
-        f << "nStations,jammer,jammerDistance,channelSwitch,jammerDuty,seed,station,distToJammer,"
+        f << "nStations,jammer,jammerDistance,channelSwitch,switchChannel,jammerDuty,seed,station,distToJammer,"
              "txPackets,rxPackets,throughputMbps,lossRatio,meanDelayMs,sinrDb,retries,drops,"
              "ccaBusy\n";
     }
@@ -294,7 +298,7 @@ main(int argc, char* argv[])
     {
         double dist = staNodes.Get(i)->GetObject<MobilityModel>()->GetDistanceFrom(jamPos);
         f << nStations << ',' << jammer << ',' << jammerDistance << ',' << channelSwitch << ','
-          << jammerDuty << ','
+          << switchChannel << ',' << jammerDuty << ','
           << seed << ',' << i << ',' << dist << ',' << tx[i] << ',' << rx[i] << ','
           << rx[i] * pktSize * 8.0 / simTime / 1e6 << ','                   // application bits
           << (tx[i] ? double(tx[i] - rx[i]) / tx[i] : nan) << ','           // loss ratio
