@@ -24,10 +24,16 @@ The old model produced an all-or-nothing step function: every run was either tot
   recovery is *partial and measured* (< 100%), not a foregone conclusion — a realistic 2.4 GHz
   scenario where no clean non-overlapping channel is free.
 
-## What to expect now (fill in with your actual numbers after the full run)
+## What the 5 s dry run showed (replace with 60 s numbers for the paper)
 
-- `duty_response.png`: loss climbs from ~0% at duty 0 toward ~100% at duty 1; throughput falls
-  in step. A sloped line, not a jump.
-- `distance_gradient.png`: a smooth loss-vs-distance curve with real error bars (fading adds spread).
-- `recovery.csv`: channel-switch recovery now below 100%, and differing by distance / station
-  count — quantifying how much a half-overlapping channel actually buys you.
+- **Distance gradient (`distance_gradient.png`)** — now a clean curve with seed-to-seed spread:
+  10 m ~95-100% loss, 20 m ~50%, 30 m ~10%, 40 m ~1%, 50 m+ 0%.
+- **Channel switch (`recovery.csv`)** — partial, not 100%: near N=5 goes from ~3% delivered
+  (jammed) to ~20-29% delivered (switched). A half-overlapping channel helps but does not cure.
+- **Duty cycle (`duty_response.png`)** — a *threshold*, not a straight line: loss stays small
+  until the jammer is nearly continuous, then collapses near duty 1.0. The traffic is light
+  (1 Mbps/station), so during the jammer's OFF gaps the backlog drains; only near-continuous
+  jamming denies service. The sweep samples 0.9/0.95/0.99/1.0 to show the knee.
+
+This is the finding to lead with: jamming damage depends on *distance* (smooth) and on the
+*jammer's continuity* (threshold), and channel switching recovers only part of the loss.

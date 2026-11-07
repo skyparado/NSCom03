@@ -45,8 +45,10 @@ runs += [(("on", "off", d, 1.0), 5, s, dist_out)
          for d in (10, 20, 30, 40, 50, 60) for s in range(1, args.seeds + 1)]
 
 # Intensity sweep: near jammer, N=5, varying on-fraction -> results_duty.csv (the dose-response curve).
+# Sampled finely near 1.0: light traffic drains in the jammer's OFF gaps, so denial only
+# appears as the duty cycle approaches continuous -- the knee is between 0.9 and 1.0.
 runs += [(("on", "off", 10, duty), 5, s, duty_out)
-         for duty in (0.0, 0.1, 0.25, 0.5, 0.75, 1.0) for s in range(1, args.seeds + 1)]
+         for duty in (0.0, 0.5, 0.8, 0.9, 0.95, 0.99, 1.0) for s in range(1, args.seeds + 1)]
 
 subprocess.run(["./ns3", "build"], cwd=args.ns3_dir, check=True)
 for i, ((jammer, switch, dist, duty), n, seed, target) in enumerate(runs, 1):
