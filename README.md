@@ -1,7 +1,10 @@
 # Interference and Jamming Mitigation in Wi-Fi Networks Using ns-3
 
-NSS S40B, Group 6. One 802.11n AP with 1/5/10 stations on 2.4 GHz, a constant jammer
-(waveform generator, channel 1) at 10 m or 40 m, and channel switching (to channel 6) as the mitigation.
+NSS S40B, Group 6. One 802.11n AP with 1/5/10 stations on 2.4 GHz, a jammer
+(waveform generator, channel 1) at 10 m or 40 m, and channel switching (to channel 3) as the mitigation.
+The channel has Nakagami multipath fading, the jammer's on-fraction (duty cycle) is a swept parameter,
+and the mitigation channel half-overlaps the jammer, so loss, SINR and recovery vary continuously
+instead of being all-or-nothing.
 
 ## Requirements
 
@@ -21,6 +24,8 @@ cd ~/ns-3-dev && ./ns3 configure --build-profile=optimized && ./ns3 build
 # all test cases: 5 configs x 3 station counts x 10 seeds = 150 runs
 python3 run_all.py --ns3-dir ~/ns-3-dev --out results.csv   # add --sim-time 5 for a dry run
 python3 plot.py results.csv
+python3 plot_duty.py results_duty.csv
+python3 plot_mitigation.py results_mitigation.csv
 ```
 
 The jammer power is calibrated to **4 dBm** (`run_all.py --jammer-power`). At the ns-3 default
@@ -42,10 +47,16 @@ its radius is ~40 m, giving a loss-vs-distance gradient (10 m ~100% → 50 m ~0%
 | `l1_l2.png` | SINR, retries per packet, CCA busy time (Objective 6) |
 | `per_station.png` | loss and SINR vs each station's distance to the jammer (RQ3) |
 | `distance_gradient.png` | RQ3: packet loss and throughput vs jammer distance (10-60 m) |
+| `duty_response.png` | packet loss and throughput vs jammer on-fraction (duty cycle 0-100%) |
+| `mitigation.png` | no switch vs switch to overlapping ch 3 vs switch to clean ch 6 (partial vs full recovery) |
 
 ## Modeling notes (state these in the paper)
 
-- Log-distance path loss, reference loss 40.05 dB at 1 m (2.4 GHz free space; the ns-3 default is the 5 GHz value).
+- Log-distance path loss, reference loss 40.05 dB at 1 m (2.4 GHz free space; the ns-3 default is the 5 GHz value),
+  plus Nakagami multipath fading (default m: 1.5/0.75/0.75 by distance) so per-frame SINR varies and seeds differ.
+- Jammer on-fraction `--jammerDuty` (0..1); `run_all.py` sweeps it (0, 0.1, 0.25, 0.5, 0.75, 1.0) near the AP.
+- Channel switching moves the BSS off channel 1 to `--switchChannel` (default 3, which half-overlaps
+  the jammer so mitigation is partial; 6/11 are clean for full escape). `run_all.py` compares ch 3 vs ch 6.
 - Fixed rate: `ConstantRateWifiManager`, HtMcs7 data / HtMcs0 control.
 - Jammer and traffic start at t = 1 s, after association; traffic runs `simTime` seconds; packets still queued 1 s after traffic stops count as lost.
 - Throughput counts UDP payload only (no headers).

@@ -7,3 +7,6 @@ recovery.csv
 # ns-3 / build spillover if run in-tree
 *.o
 *.pcap
+
+# build artifacts
+__pycache__/

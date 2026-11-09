@@ -24,6 +24,10 @@ out = pathlib.Path(args.out).resolve()
 out.unlink(missing_ok=True)
 dist_out = out.with_name(out.stem + "_distance" + out.suffix)
 dist_out.unlink(missing_ok=True)
+duty_out = out.with_name(out.stem + "_duty" + out.suffix)
+duty_out.unlink(missing_ok=True)
+mit_out = out.with_name(out.stem + "_mitigation" + out.suffix)
+mit_out.unlink(missing_ok=True)
 
 PW = args.jammer_power
 # near = 10 m (inside the jammer's radius), far = 40 m (at its edge).
@@ -35,19 +39,30 @@ configs = [
     ("on", "on", 10),    # T5 near
     ("on", "on", 40),    # T5 far
 ]
-runs = [(c, n, s, out) for c in configs for n in (1, 5, 10) for s in range(1, args.seeds + 1)]
+# each run: (jammer, switch, dist, duty, switchChannel), nStations, seed, target CSV.
+runs = [(c + (1.0, 3), n, s, out) for c in configs for n in (1, 5, 10) for s in range(1, args.seeds + 1)]
 
 # RQ3 distance sweep: jammed only, N=5, across the indoor range -> results_distance.csv.
-sweep = [(("on", "off", d), 5, s, dist_out)
+runs += [(("on", "off", d, 1.0, 3), 5, s, dist_out)
          for d in (10, 20, 30, 40, 50, 60) for s in range(1, args.seeds + 1)]
-runs += sweep
+
+# Intensity sweep: near jammer, N=5, varying on-fraction -> results_duty.csv (the dose-response curve).
+# Sampled finely near 1.0: light traffic drains in the jammer's OFF gaps, so denial only
+# appears as the duty cycle approaches continuous -- the knee is between 0.9 and 1.0.
+runs += [(("on", "off", 10, duty, 3), 5, s, duty_out)
+         for duty in (0.0, 0.5, 0.8, 0.9, 0.95, 0.99, 1.0) for s in range(1, args.seeds + 1)]
+
+# Mitigation comparison: near jammer, N=5 -- no switch vs switch to the half-overlapping ch 3
+# vs switch to the clean ch 6. Shows full vs partial recovery -> results_mitigation.csv.
+runs += [(("on", sw, 10, 1.0, ch), 5, s, mit_out)
+         for sw, ch in (("off", 3), ("on", 3), ("on", 6)) for s in range(1, args.seeds + 1)]
 
 subprocess.run(["./ns3", "build"], cwd=args.ns3_dir, check=True)
-for i, ((jammer, switch, dist), n, seed, target) in enumerate(runs, 1):
+for i, ((jammer, switch, dist, duty, ch), n, seed, target) in enumerate(runs, 1):
     prog = (f"wifi-jamming --nStations={n} --jammerDistance={dist} --jammer={jammer} "
-            f"--channelSwitch={switch} --jammerPower={PW} --seed={seed} "
-            f"--simTime={args.sim_time} --out={target}")
+            f"--channelSwitch={switch} --switchChannel={ch} --jammerPower={PW} "
+            f"--jammerDuty={duty} --seed={seed} --simTime={args.sim_time} --out={target}")
     print(f"[{i}/{len(runs)}] {prog}", flush=True)
     subprocess.run(["./ns3", "run", "--no-build", prog], cwd=args.ns3_dir, check=True)
 
-print(f"Wrote {out} and {dist_out}")
+print(f"Wrote {out}, {dist_out}, {duty_out} and {mit_out}")
