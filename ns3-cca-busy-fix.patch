@@ -1,0 +1,15 @@
+diff --git a/src/wifi/model/wifi-phy-state-helper.cc b/src/wifi/model/wifi-phy-state-helper.cc
+index 71064708f..12bcb98dc 100644
+--- a/src/wifi/model/wifi-phy-state-helper.cc
++++ b/src/wifi/model/wifi-phy-state-helper.cc
+@@ -526,7 +526,9 @@ WifiPhyStateHelper::SwitchMaybeToCcaBusy(Time duration,
+     {
+         m_startCcaBusy = now;
+     }
+-    m_endCcaBusy = now + duration;
++    // A new CCA indication must not cut short one already running (e.g. the PHY header being
++    // received): that left the PHY idle mid-reception and later aborted in SwitchToRx.
++    m_endCcaBusy = std::max(m_endCcaBusy, now + duration);
+ }
+ 
+ void

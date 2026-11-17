@@ -9,6 +9,7 @@ Run the Python scripts from `~/NSCom03`, not from the ns-3 directory.
 cd ~ && git clone https://github.com/skyparado/NSCom03   # if not already cloned
 cd ~/NSCom03
 python3 -m venv ~/venv && ~/venv/bin/pip install -r requirements.txt
+git -C ~/ns-3-dev apply ~/NSCom03/ns3-cca-busy-fix.patch    # ns-3 fix, see README
 ```
 
 WSL blocks system-wide `pip` (externally-managed-environment), so the venv is required.
@@ -16,18 +17,16 @@ WSL blocks system-wide `pip` (externally-managed-environment), so the venv is re
 ## Full run
 
 ```bash
-cp ~/NSCom03/wifi-jamming.cc ~/ns-3-dev/scratch/   # re-copy if you edited the .cc
 ~/venv/bin/python run_all.py --ns3-dir ~/ns-3-dev --out results.csv
 ~/venv/bin/python plot.py results.csv
-~/venv/bin/python plot_distance.py results_distance.csv
 ~/venv/bin/python plot_duty.py results_duty.csv
-~/venv/bin/python plot_mitigation.py results_mitigation.csv
 ```
 
-Add `--sim-time 5` to `run_all.py` for a ~60x faster dry run.
-`run_all.py` builds ns-3 but does NOT copy the .cc — copy it yourself after any edit.
+`run_all.py` copies `wifi-jamming.cc` into `<ns-3>/scratch/`, builds, and runs 1,930 simulations
+in parallel (one per CPU core minus one; `--jobs N` to change). About 70 minutes on 8 cores.
+Add `--sim-time 5 --seeds 2` for a dry run that takes about a minute.
 
 ## Outputs (written to the directory you run from)
 
-results.csv, results_distance.csv, summary.csv, recovery.csv, and the PNGs.
+results.csv, results_duty.csv, summary.csv, denial_radius.csv, recovery.csv, and the PNGs.
 Open figures from Windows with `explorer.exe .`

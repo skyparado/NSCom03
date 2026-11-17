@@ -99,9 +99,14 @@ main(int argc, char* argv[])
     std::string jammerStr = "on";
     std::string channelSwitchStr = "off"; // T5: victim BSS moves to switchChannel, jammer stays on 1
     uint32_t switchChannel = 3;           // target channel when switching: 3 half-overlaps ch 1, 6/11 are clean
+    std::string rateAdaptationStr = "off"; // off = fixed HtMcs7 (proposal), on = Minstrel-HT
     uint32_t seed = 1;
     double jammerPowerDbm = 16.0206; // ns-3 default WifiPhy TxPower
     double jammerDuty = 1.0;         // fraction of time the jammer is on (1.0 = constant)
+    // One jammer burst cycle. Each burst gets its own fading draw, so 1 ms gives the jammer the
+    // same frame-by-frame fading as the Wi-Fi links. Needs ns3-cca-busy-fix.patch: without it
+    // ns-3 aborts ("Invalid WifiPhy state RX") or hangs when bursts start this often.
+    double jammerPeriod = 0.001;
     double simTime = 60.0;           // traffic duration, s
     uint32_t pktSize = 1024;         // bytes
     double rateBps = 1e6;            // per station
@@ -113,9 +118,11 @@ main(int argc, char* argv[])
     cmd.AddValue("jammer", "Enable the constant jammer (on/off)", jammerStr);
     cmd.AddValue("channelSwitch", "Move AP and stations off channel 1 (on/off)", channelSwitchStr);
     cmd.AddValue("switchChannel", "Target channel when switching (3=overlap, 6/11=clean)", switchChannel);
+    cmd.AddValue("rateAdaptation", "Minstrel-HT rate adaptation instead of fixed HtMcs7 (on/off)", rateAdaptationStr);
     cmd.AddValue("seed", "Run number for the RNG", seed);
     cmd.AddValue("jammerPower", "Jammer Tx power (dBm), for calibration", jammerPowerDbm);
     cmd.AddValue("jammerDuty", "Jammer on-fraction 0..1 (1.0 = constant)", jammerDuty);
+    cmd.AddValue("jammerPeriod", "Jammer burst cycle (s)", jammerPeriod);
     cmd.AddValue("simTime", "Traffic duration (s)", simTime);
     cmd.AddValue("out", "CSV file to append the result rows to", out);
     cmd.Parse(argc, argv);
@@ -125,7 +132,10 @@ main(int argc, char* argv[])
     NS_ABORT_MSG_IF(channelSwitchStr != "on" && channelSwitchStr != "off",
                     "channelSwitch must be on or off");
     bool jammer = jammerStr == "on";
+    NS_ABORT_MSG_IF(rateAdaptationStr != "on" && rateAdaptationStr != "off",
+                    "rateAdaptation must be on or off");
     bool channelSwitch = channelSwitchStr == "on";
+    bool rateAdaptation = rateAdaptationStr == "on";
 
     RngSeedManager::SetSeed(1);
     RngSeedManager::SetRun(seed);
@@ -138,12 +148,15 @@ main(int argc, char* argv[])
     jammerNode.Create(1);
 
     // AP at origin, stations on a 10 m circle, jammer on the +x axis.
-    // Stations are offset half a step so none sits on top of the near jammer at (10, 0).
+    // The ring is rotated by a random angle per seed: with a fixed layout a lone station always
+    // sat on the side away from the jammer, so "fewer stations" looked more robust than it is.
+    // Drawn first so a seed gives the same layout in every scenario (paired comparisons).
+    double phase = CreateObject<UniformRandomVariable>()->GetValue(0, 2 * M_PI);
     Ptr<ListPositionAllocator> pos = CreateObject<ListPositionAllocator>();
     pos->Add(Vector(0, 0, 0));
     for (uint32_t i = 0; i < nStations; ++i)
     {
-        double a = 2 * M_PI * (i + 0.5) / nStations;
+        double a = phase + 2 * M_PI * i / nStations;
         pos->Add(Vector(10 * std::cos(a), 10 * std::sin(a), 0));
     }
     pos->Add(Vector(jammerDistance, 0, 0));
@@ -160,8 +173,12 @@ main(int argc, char* argv[])
     loss->SetAttribute("ReferenceLoss", DoubleValue(40.05));
     channel->AddPropagationLossModel(loss);
     // Multipath fading on top of path loss: makes per-frame SINR vary, so seeds differ and the
-    // jammer's edge is a gradient instead of a cliff (default m: 1.5/0.75/0.75 by distance).
-    channel->AddPropagationLossModel(CreateObject<NakagamiPropagationLossModel>());
+    // jammer's edge is a gradient instead of a cliff. One m for every distance: the default
+    // drops to 0.75 beyond 80 m, which would put a kink in the 10-100 m jammer-distance sweep.
+    Ptr<NakagamiPropagationLossModel> fading = CreateObject<NakagamiPropagationLossModel>();
+    fading->SetAttribute("m1", DoubleValue(1.5));
+    fading->SetAttribute("m2", DoubleValue(1.5));
+    channel->AddPropagationLossModel(fading);
     channel->SetPropagationDelayModel(CreateObject<ConstantSpeedPropagationDelayModel>());
 
     SpectrumWifiPhyHelper phy;
@@ -172,15 +189,29 @@ main(int argc, char* argv[])
                                  ? "{" + std::to_string(switchChannel) + ", 20, BAND_2_4GHZ, 0}"
                                  : "{1, 20, BAND_2_4GHZ, 0}";
     phy.Set("ChannelSettings", StringValue(chSettings));
+    // 802.11 holds CCA busy for energy that is not a decoded Wi-Fi preamble only above -62 dBm.
+    // ns-3's default applies -82 dBm to all in-band energy after any frame, so a jammer 20 dB
+    // too weak to trip a real radio's energy detect still froze the stations until its burst
+    // ended; the burst length then decided the loss (50%-loss distance 23 m at 1 ms bursts,
+    // 51 m at 100 ms, 88 m at 1 s). The no-jammer baseline is the same with either value.
+    phy.Set("CcaSensitivity", DoubleValue(-62.0));
 
     WifiHelper wifi;
     wifi.SetStandard(WIFI_STANDARD_80211n);
-    // Fixed rate so results reflect jamming, not rate adaptation (see Scope).
-    wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager",
-                                 "DataMode",
-                                 StringValue("HtMcs7"),
-                                 "ControlMode",
-                                 StringValue("HtMcs0"));
+    // Fixed rate by default so results reflect jamming, not rate adaptation (see Scope).
+    // Minstrel-HT is what real devices run: it falls back to slower, more robust rates.
+    if (rateAdaptation)
+    {
+        wifi.SetRemoteStationManager("ns3::MinstrelHtWifiManager");
+    }
+    else
+    {
+        wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager",
+                                     "DataMode",
+                                     StringValue("HtMcs7"),
+                                     "ControlMode",
+                                     StringValue("HtMcs0"));
+    }
 
     WifiMacHelper mac;
     Ssid ssid("nss-jamming");
@@ -189,7 +220,7 @@ main(int argc, char* argv[])
     mac.SetType("ns3::ApWifiMac", "Ssid", SsidValue(ssid));
     NetDeviceContainer apDev = wifi.Install(phy, mac, apNode);
 
-    // Constant jammer: waveform generator with 100% duty cycle over channel 1 (2402-2422 MHz).
+    // Constant jammer: waveform generator, back-to-back bursts over channel 1 (2402-2422 MHz).
     // It ignores CSMA/CA, unlike a regular Wi-Fi node.
     BandInfo band;
     band.fl = 2402e6;
@@ -201,7 +232,7 @@ main(int argc, char* argv[])
     WaveformGeneratorHelper wg;
     wg.SetChannel(channel);
     wg.SetTxPowerSpectralDensity(psd);
-    wg.SetPhyAttribute("Period", TimeValue(Seconds(0.1)));
+    wg.SetPhyAttribute("Period", TimeValue(Seconds(jammerPeriod)));
     wg.SetPhyAttribute("DutyCycle", DoubleValue(jammerDuty));
     NetDeviceContainer jamDev = wg.Install(jammerNode);
     if (jammer)
@@ -288,7 +319,7 @@ main(int argc, char* argv[])
     std::ofstream f(out, std::ios::app);
     if (newFile)
     {
-        f << "nStations,jammer,jammerDistance,channelSwitch,switchChannel,jammerDuty,seed,station,distToJammer,"
+        f << "nStations,jammer,jammerPower,jammerDistance,channelSwitch,switchChannel,rateAdaptation,jammerDuty,seed,station,distToJammer,"
              "txPackets,rxPackets,throughputMbps,lossRatio,meanDelayMs,sinrDb,retries,drops,"
              "ccaBusy\n";
     }
@@ -297,8 +328,9 @@ main(int argc, char* argv[])
     for (uint32_t i = 0; i < nStations; ++i)
     {
         double dist = staNodes.Get(i)->GetObject<MobilityModel>()->GetDistanceFrom(jamPos);
-        f << nStations << ',' << jammer << ',' << jammerDistance << ',' << channelSwitch << ','
-          << switchChannel << ',' << jammerDuty << ','
+        f << nStations << ',' << jammer << ',' << jammerPowerDbm << ',' << jammerDistance << ','
+          << channelSwitch << ','
+          << switchChannel << ',' << rateAdaptation << ',' << jammerDuty << ','
           << seed << ',' << i << ',' << dist << ',' << tx[i] << ',' << rx[i] << ','
           << rx[i] * pktSize * 8.0 / simTime / 1e6 << ','                   // application bits
           << (tx[i] ? double(tx[i] - rx[i]) / tx[i] : nan) << ','           // loss ratio
