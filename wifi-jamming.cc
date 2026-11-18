@@ -91,6 +91,33 @@ SampleCca(Time stop)
     }
 }
 
+// Dynamic channel switch: cumulative packets received by the AP's UDP server, sampled at
+// t = 0, 1, 2, ... s. (Reads GetReceived(), which is stable across ns-3 versions, unlike the
+// server's Rx trace whose signature changed.) The difference of two samples is packets per second.
+std::vector<uint64_t> g_rxCum;
+
+void
+SampleServerRx(Ptr<UdpServer> srv)
+{
+    size_t s = static_cast<size_t>(Simulator::Now().GetSeconds() + 0.5);
+    if (s < g_rxCum.size())
+    {
+        g_rxCum[s] = srv->GetReceived();
+    }
+    if (s + 1 < g_rxCum.size())
+    {
+        Simulator::Schedule(Seconds(1), &SampleServerRx, srv);
+    }
+}
+
+// Retune one device to another 20 MHz channel in the 2.4 GHz band, mid-run.
+void
+SwitchChannel(Ptr<WifiNetDevice> dev, uint8_t channel)
+{
+    dev->GetPhy()->SetOperatingChannel(
+        WifiPhy::ChannelTuple{channel, 20, WIFI_PHY_BAND_2_4GHZ, 0});
+}
+
 int
 main(int argc, char* argv[])
 {
@@ -108,6 +135,7 @@ main(int argc, char* argv[])
     // ns-3 aborts ("Invalid WifiPhy state RX") or hangs when bursts start this often.
     double jammerPeriod = 0.001;
     double simTime = 60.0;           // traffic duration, s
+    double switchTime = -1.0;        // >= 0: switch channel mid-run at this time (s); < 0 = static
     uint32_t pktSize = 1024;         // bytes
     double rateBps = 1e6;            // per station
     std::string out = "wifi-jamming.csv";
@@ -124,6 +152,9 @@ main(int argc, char* argv[])
     cmd.AddValue("jammerDuty", "Jammer on-fraction 0..1 (1.0 = constant)", jammerDuty);
     cmd.AddValue("jammerPeriod", "Jammer burst cycle (s)", jammerPeriod);
     cmd.AddValue("simTime", "Traffic duration (s)", simTime);
+    cmd.AddValue("switchTime",
+                 "Time (s) of a mid-run channel switch with --channelSwitch=on; <0 = static",
+                 switchTime);
     cmd.AddValue("out", "CSV file to append the result rows to", out);
     cmd.Parse(argc, argv);
 
@@ -136,6 +167,9 @@ main(int argc, char* argv[])
                     "rateAdaptation must be on or off");
     bool channelSwitch = channelSwitchStr == "on";
     bool rateAdaptation = rateAdaptationStr == "on";
+    bool dynamicSwitch = channelSwitch && switchTime >= 0;
+    NS_ABORT_MSG_IF(dynamicSwitch && (switchTime < 1.0 || switchTime > 1.0 + simTime),
+                    "switchTime must fall inside the traffic period (1 s to 1 s + simTime)");
 
     RngSeedManager::SetSeed(1);
     RngSeedManager::SetRun(seed);
@@ -185,7 +219,8 @@ main(int argc, char* argv[])
     phy.SetChannel(channel);
     // Switch off channel 1 to switchChannel: channel 3 half-overlaps the jammer (partial relief),
     // channel 6/11 are clean (full escape). Comparing them shows what the mitigation actually buys.
-    std::string chSettings = channelSwitch
+    // Dynamic mode starts on channel 1 (jammed) and moves at switchTime instead.
+    std::string chSettings = (channelSwitch && !dynamicSwitch)
                                  ? "{" + std::to_string(switchChannel) + ", 20, BAND_2_4GHZ, 0}"
                                  : "{1, 20, BAND_2_4GHZ, 0}";
     phy.Set("ChannelSettings", StringValue(chSettings));
@@ -281,6 +316,23 @@ main(int argc, char* argv[])
     ApplicationContainer serverApp = server.Install(apNode);
     serverApp.Start(Seconds(0.5));
     serverApp.Stop(Seconds(simTime + 2));
+    if (dynamicSwitch)
+    {
+        g_rxCum.assign(static_cast<size_t>(simTime) + 2, 0); // samples at t = 0 .. simTime + 1
+        Simulator::ScheduleNow(&SampleServerRx, DynamicCast<UdpServer>(serverApp.Get(0)));
+        // At switchTime the AP and every station move to the new channel; the jammer stays on 1.
+        Simulator::Schedule(Seconds(switchTime),
+                            &SwitchChannel,
+                            DynamicCast<WifiNetDevice>(apDev.Get(0)),
+                            static_cast<uint8_t>(switchChannel));
+        for (uint32_t i = 0; i < nStations; ++i)
+        {
+            Simulator::Schedule(Seconds(switchTime),
+                                &SwitchChannel,
+                                DynamicCast<WifiNetDevice>(staDevs.Get(i)),
+                                static_cast<uint8_t>(switchChannel));
+        }
+    }
 
     UdpClientHelper client(apIf.GetAddress(0), port);
     client.SetAttribute("MaxPackets", UintegerValue(std::numeric_limits<uint32_t>::max()));
@@ -345,6 +397,23 @@ main(int argc, char* argv[])
     {
         txAll += tx[i];
         rxAll += rx[i];
+    }
+    if (dynamicSwitch)
+    {
+        // Packets received per second at the AP, one row per second, appended like the main CSV.
+        std::string tl = out + ".timeline.csv";
+        bool newTl = !std::ifstream(tl).good();
+        std::ofstream t(tl, std::ios::app);
+        if (newTl)
+        {
+            t << "nStations,jammerPower,jammerDistance,switchChannel,switchTime,seed,second,rxPackets\n";
+        }
+        for (size_t s = 0; s + 1 < g_rxCum.size(); ++s)
+        {
+            t << nStations << ',' << jammerPowerDbm << ',' << jammerDistance << ','
+              << switchChannel << ',' << switchTime << ',' << seed << ',' << s << ','
+              << g_rxCum[s + 1] - g_rxCum[s] << '\n'; // packets received in [s, s+1)
+        }
     }
     std::cout << "tx=" << txAll << " rx=" << rxAll << " (" << nStations << " stations)\n";
 

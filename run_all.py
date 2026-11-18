@@ -8,8 +8,12 @@ results.csv       jammer distance 10-100 m x 1/5/10 stations x seeds, for
                     - 30 dBm jammer + switch to ch 3 (half overlap) or ch 6 (clean),
                       or Minstrel-HT rate adaptation                     (T5)
 results_duty.csv  10 m jammer, 5 stations, jammer on-fraction 0-100% of a 100 ms cycle
+results_dynamic.csv, results_dynamic_timeline.csv
+                  jammed on ch 1 first, then the whole network switches mid-run to ch 3 or ch 6
+                  (5 stations, 3 jammer powers, 3 distances); the timeline has packets/s at the AP
 """
 import argparse
+import contextlib
 import os
 import pathlib
 import re
@@ -25,11 +29,15 @@ p.add_argument("--out", default="results.csv")
 p.add_argument("--seeds", type=int, default=10)
 p.add_argument("--sim-time", type=float, default=60, help="use e.g. 5 for a quick test")
 p.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1), help="parallel runs")
+p.add_argument("--dynamic-only", action="store_true",
+               help="run only the mid-run channel-switch cases (skip the 1,930 static runs)")
 args = p.parse_args()
 
 ns3 = pathlib.Path(args.ns3_dir).expanduser().resolve()
 out = pathlib.Path(args.out).resolve()
 duty_out = out.with_name(out.stem + "_duty" + out.suffix)
+dyn_out = out.with_name(out.stem + "_dynamic" + out.suffix)
+dyn_timeline_out = out.with_name(out.stem + "_dynamic_timeline" + out.suffix)
 
 DISTANCES = range(10, 101, 10)  # m from the AP
 STATIONS = (1, 5, 10)
@@ -52,12 +60,19 @@ main += [f"{g} --jammer=off --rateAdaptation=on" for g in grid]  # control for r
 duty = [f"--nStations=5 --seed={s} --jammer=on --jammerPower={POWERS[0]} --jammerDistance=10 "
         f"--jammerPeriod=0.1 --jammerDuty={dc}"
         for dc in (0.0, 0.5, 0.8, 0.9, 0.95, 0.99, 1.0) for s in SEEDS]
+# Dynamic switch: the network starts on ch 1 with the jammer on from 1 s, then moves at SWITCH_TIME.
+# 20 s of the 60 s run; a short dry run (e.g. --sim-time 5) scales it to a third of the run so it
+# still lands inside the traffic period.
+SWITCH_TIME = min(20.0, args.sim_time / 3)
+dynamic = [f"--nStations=5 --seed={s} --jammer=on --jammerPower={pw} --jammerDistance={d} "
+           f"--channelSwitch=on --switchChannel={ch} --switchTime={SWITCH_TIME}"
+           for pw in POWERS for ch in (3, 6) for d in (10, 30, 60) for s in SEEDS]
 
 
 crashed = []
 
 
-def sweep(runs, target, tmp):
+def sweep(runs, target, tmp, timeline=None):
     def one(job):
         i, flags = job
         part = tmp / f"{target.stem}-{i}.csv"
@@ -73,11 +88,15 @@ def sweep(runs, target, tmp):
             crashed.append(attempt)
         raise RuntimeError(f"wifi-jamming {attempt} failed twice:\n{r.stderr[-2000:]}")
 
-    with ThreadPoolExecutor(args.jobs) as pool, open(target, "w") as f:
+    with ThreadPoolExecutor(args.jobs) as pool, open(target, "w") as f, \
+            (open(timeline, "w") if timeline else contextlib.nullcontext()) as tf:
         # One CSV per run, joined in order: parallel runs appending to one file would interleave.
         for k, part in enumerate(pool.map(one, enumerate(runs))):
             lines = part.read_text().splitlines(keepends=True)
             f.writelines(lines if k == 0 else lines[1:])
+            if timeline:  # each run also wrote <part>.timeline.csv (packets/s at the AP)
+                tl = pathlib.Path(f"{part}.timeline.csv").read_text().splitlines(keepends=True)
+                tf.writelines(tl if k == 0 else tl[1:])
             print(f"\r{target.name}: {k + 1}/{len(runs)}", end="", flush=True)
     print()
 
@@ -93,7 +112,12 @@ if subprocess.run(["git", "apply", "--reverse", "--check", str(patch)], cwd=ns3,
 shutil.copy(here / "wifi-jamming.cc", ns3 / "scratch")
 subprocess.run(["./ns3", "build"], cwd=ns3, check=True)
 with tempfile.TemporaryDirectory() as tmp:
-    sweep(main, out, pathlib.Path(tmp))
-    sweep(duty, duty_out, pathlib.Path(tmp))
-print(f"Wrote {out} and {duty_out}")
+    if not args.dynamic_only:
+        sweep(main, out, pathlib.Path(tmp))
+        sweep(duty, duty_out, pathlib.Path(tmp))
+    sweep(dynamic, dyn_out, pathlib.Path(tmp), dyn_timeline_out)
+if args.dynamic_only:
+    print(f"Wrote {dyn_out} and {dyn_timeline_out}")
+else:
+    print(f"Wrote {out}, {duty_out}, {dyn_out} and {dyn_timeline_out}")
 print(f"{len(crashed)} run(s) aborted inside ns-3 and were redone with seed + 1000:", *crashed, sep="\n  ")
