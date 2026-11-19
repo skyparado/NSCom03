@@ -90,9 +90,15 @@ one station); **23 dBm** is 200 mW; **30 dBm** is 1 W, a typical handheld jammer
   aborted within 10 s, after it 190 of 190 test runs and all 1,930 runs of the study finished.
 - **Rate.** Fixed `HtMcs7` data / `HtMcs0` control by default, as in the proposal's scope.
   `--rateAdaptation=on` uses `MinstrelHtWifiManager` instead.
-- **Channel switching** is idealized: the BSS is on the new channel from t = 0; detection time and
-  switching overhead are not modeled. Channel 3 overlaps half of the jammer's band; channel 6
-  overlaps none of it, and the jammer has no out-of-band leakage in this model.
+- **Channel switching.** In `results.csv` the BSS is on the new channel from t = 0 (no detection
+  time or switching overhead). `results_dynamic*.csv` (`--detectSwitch=on`) starts on channel 1 and
+  switches mid-run once the AP detects jamming: a second that delivers under `--detectThreshold`
+  (default 50%) of the offered packets; `plot_dynamic.py` plots it. `--switchTime=T` switches at a
+  fixed time instead. Channel 3 overlaps half of the jammer's 20 MHz; channel 6 overlaps none of it.
+- **Jammer leakage** (`--jammerLeakage`, default on): outside its 20 MHz the jammer also radiates at
+  the 802.11 OFDM spectral-mask level (-20 dBr at 11 MHz, -28 at 20, -40 from 30 MHz off), so
+  channel 6 sees a jammer about 25-40 dB weaker instead of none. `--jammerLeakage=off` is the
+  earlier brick-wall jammer; channel-1 results are the same either way.
 - **Pulsed jammer** (`--jammerDuty`, `--jammerPeriod`): `run_all.py` uses a 100 ms cycle at 10 m.
 - Jammer and traffic start at t = 1 s, after association; packets still queued 1 s after traffic
   stops count as lost. Throughput counts UDP payload only.

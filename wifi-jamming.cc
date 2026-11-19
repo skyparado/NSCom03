@@ -95,6 +95,22 @@ SampleCca(Time stop)
 // t = 0, 1, 2, ... s. (Reads GetReceived(), which is stable across ns-3 versions, unlike the
 // server's Rx trace whose signature changed.) The difference of two samples is packets per second.
 std::vector<uint64_t> g_rxCum;
+std::vector<Ptr<WifiNetDevice>> g_switchDevs; // AP + stations, retuned together
+uint8_t g_switchChannel = 0;
+double g_switchedAt = -1;   // time the network switched (s), -1 = not (yet)
+double g_detectBelow = 0;   // detection: switch when a second delivers fewer packets; 0 = off
+
+// Retune the AP and every station to g_switchChannel, mid-run. The jammer stays on channel 1.
+void
+SwitchNetwork()
+{
+    for (auto& dev : g_switchDevs)
+    {
+        dev->GetPhy()->SetOperatingChannel(
+            WifiPhy::ChannelTuple{g_switchChannel, 20, WIFI_PHY_BAND_2_4GHZ, 0});
+    }
+    g_switchedAt = Simulator::Now().GetSeconds();
+}
 
 void
 SampleServerRx(Ptr<UdpServer> srv)
@@ -103,6 +119,15 @@ SampleServerRx(Ptr<UdpServer> srv)
     if (s < g_rxCum.size())
     {
         g_rxCum[s] = srv->GetReceived();
+        // Jamming detection at the AP: the last full second of traffic ([s-1, s), traffic starts
+        // at 1 s) delivered under the threshold, so the AP moves the whole BSS to the new channel.
+        // shortcut: checks once per second, so detection takes 1-2 s; sample faster for a quicker
+        // reaction.
+        if (g_detectBelow > 0 && g_switchedAt < 0 && s >= 2 &&
+            g_rxCum[s] - g_rxCum[s - 1] < g_detectBelow)
+        {
+            SwitchNetwork();
+        }
     }
     if (s + 1 < g_rxCum.size())
     {
@@ -110,12 +135,25 @@ SampleServerRx(Ptr<UdpServer> srv)
     }
 }
 
-// Retune one device to another 20 MHz channel in the 2.4 GHz band, mid-run.
-void
-SwitchChannel(Ptr<WifiNetDevice> dev, uint8_t channel)
+// 802.11 OFDM 20 MHz transmit spectral mask (IEEE 802.11-2020, 17.3.9.3): power relative to the
+// in-band level, in dB, at `off` MHz from the channel centre. Linear in dB between the corners.
+double
+SpectralMaskDbr(double off)
 {
-    dev->GetPhy()->SetOperatingChannel(
-        WifiPhy::ChannelTuple{channel, 20, WIFI_PHY_BAND_2_4GHZ, 0});
+    const double f[] = {9, 11, 20, 30};
+    const double d[] = {0, -20, -28, -40};
+    if (off <= f[0])
+    {
+        return 0;
+    }
+    for (int i = 1; i < 4; ++i)
+    {
+        if (off <= f[i])
+        {
+            return d[i - 1] + (d[i] - d[i - 1]) * (off - f[i - 1]) / (f[i] - f[i - 1]);
+        }
+    }
+    return -40;
 }
 
 int
@@ -136,6 +174,9 @@ main(int argc, char* argv[])
     double jammerPeriod = 0.001;
     double simTime = 60.0;           // traffic duration, s
     double switchTime = -1.0;        // >= 0: switch channel mid-run at this time (s); < 0 = static
+    std::string detectSwitchStr = "off"; // on: start on ch 1, switch when jamming is detected
+    double detectThreshold = 0.5;    // detected = a second delivers under this share of offered
+    std::string jammerLeakageStr = "on"; // jammer leaks outside ch 1 per the 802.11 spectral mask
     uint32_t pktSize = 1024;         // bytes
     double rateBps = 1e6;            // per station
     std::string out = "wifi-jamming.csv";
@@ -155,6 +196,15 @@ main(int argc, char* argv[])
     cmd.AddValue("switchTime",
                  "Time (s) of a mid-run channel switch with --channelSwitch=on; <0 = static",
                  switchTime);
+    cmd.AddValue("detectSwitch",
+                 "With --channelSwitch=on: start on ch 1 and switch once the AP sees jamming (on/off)",
+                 detectSwitchStr);
+    cmd.AddValue("detectThreshold",
+                 "Jamming detected when a second delivers under this share of the offered packets",
+                 detectThreshold);
+    cmd.AddValue("jammerLeakage",
+                 "Jammer leaks into adjacent channels per the 802.11 spectral mask (on/off)",
+                 jammerLeakageStr);
     cmd.AddValue("out", "CSV file to append the result rows to", out);
     cmd.Parse(argc, argv);
 
@@ -167,8 +217,18 @@ main(int argc, char* argv[])
                     "rateAdaptation must be on or off");
     bool channelSwitch = channelSwitchStr == "on";
     bool rateAdaptation = rateAdaptationStr == "on";
-    bool dynamicSwitch = channelSwitch && switchTime >= 0;
-    NS_ABORT_MSG_IF(dynamicSwitch && (switchTime < 1.0 || switchTime > 1.0 + simTime),
+    NS_ABORT_MSG_IF(detectSwitchStr != "on" && detectSwitchStr != "off",
+                    "detectSwitch must be on or off");
+    NS_ABORT_MSG_IF(jammerLeakageStr != "on" && jammerLeakageStr != "off",
+                    "jammerLeakage must be on or off");
+    bool detectSwitch = channelSwitch && detectSwitchStr == "on";
+    bool jammerLeakage = jammerLeakageStr == "on";
+    NS_ABORT_MSG_IF(detectSwitch && switchTime >= 0, "use either switchTime or detectSwitch");
+    bool dynamicSwitch = detectSwitch || (channelSwitch && switchTime >= 0);
+    // Self-check of the mask corners and interpolation.
+    NS_ABORT_IF(SpectralMaskDbr(5) != 0 || SpectralMaskDbr(11) != -20 ||
+                SpectralMaskDbr(25) != -34 || SpectralMaskDbr(40) != -40);
+    NS_ABORT_MSG_IF(switchTime >= 0 && dynamicSwitch && (switchTime < 1.0 || switchTime > 1.0 + simTime),
                     "switchTime must fall inside the traffic period (1 s to 1 s + simTime)");
 
     RngSeedManager::SetSeed(1);
@@ -256,14 +316,27 @@ main(int argc, char* argv[])
     NetDeviceContainer apDev = wifi.Install(phy, mac, apNode);
 
     // Constant jammer: waveform generator, back-to-back bursts over channel 1 (2402-2422 MHz).
-    // It ignores CSMA/CA, unlike a regular Wi-Fi node.
-    BandInfo band;
-    band.fl = 2402e6;
-    band.fc = 2412e6;
-    band.fh = 2422e6;
-    Bands bands{band};
+    // It ignores CSMA/CA, unlike a regular Wi-Fi node. jammerPower is spread over the 20 MHz;
+    // with leakage on, the 1 MHz bins up to 40 MHz either side also carry power at the 802.11
+    // spectral-mask level (real transmitters are not brick-wall filtered), so channel 6 is no
+    // longer perfectly clean. The 20 MHz in-band part is the same either way.
+    Bands bands;
+    for (int k = -40; k < 40; ++k)
+    {
+        BandInfo b;
+        b.fl = 2412e6 + k * 1e6;
+        b.fc = b.fl + 0.5e6;
+        b.fh = b.fl + 1e6;
+        bands.push_back(b);
+    }
     Ptr<SpectrumValue> psd = Create<SpectrumValue>(Create<SpectrumModel>(bands));
-    *psd = std::pow(10.0, (jammerPowerDbm - 30) / 10) / 20e6; // W/Hz
+    double inBandPsd = std::pow(10.0, (jammerPowerDbm - 30) / 10) / 20e6; // W/Hz
+    for (int k = -40; k < 40; ++k)
+    {
+        double off = std::abs(k + 0.5); // bin centre, MHz from 2412 MHz
+        double dbr = off < 10 ? 0 : SpectralMaskDbr(off);
+        (*psd)[k + 40] = (off < 10 || jammerLeakage) ? inBandPsd * std::pow(10.0, dbr / 10) : 0;
+    }
     WaveformGeneratorHelper wg;
     wg.SetChannel(channel);
     wg.SetTxPowerSpectralDensity(psd);
@@ -320,17 +393,20 @@ main(int argc, char* argv[])
     {
         g_rxCum.assign(static_cast<size_t>(simTime) + 2, 0); // samples at t = 0 .. simTime + 1
         Simulator::ScheduleNow(&SampleServerRx, DynamicCast<UdpServer>(serverApp.Get(0)));
-        // At switchTime the AP and every station move to the new channel; the jammer stays on 1.
-        Simulator::Schedule(Seconds(switchTime),
-                            &SwitchChannel,
-                            DynamicCast<WifiNetDevice>(apDev.Get(0)),
-                            static_cast<uint8_t>(switchChannel));
+        g_switchChannel = static_cast<uint8_t>(switchChannel);
+        g_switchDevs.push_back(DynamicCast<WifiNetDevice>(apDev.Get(0)));
         for (uint32_t i = 0; i < nStations; ++i)
         {
-            Simulator::Schedule(Seconds(switchTime),
-                                &SwitchChannel,
-                                DynamicCast<WifiNetDevice>(staDevs.Get(i)),
-                                static_cast<uint8_t>(switchChannel));
+            g_switchDevs.push_back(DynamicCast<WifiNetDevice>(staDevs.Get(i)));
+        }
+        if (detectSwitch)
+        {
+            // packets/s the stations offer, times the threshold
+            g_detectBelow = detectThreshold * nStations * rateBps / (pktSize * 8);
+        }
+        else
+        {
+            Simulator::Schedule(Seconds(switchTime), &SwitchNetwork);
         }
     }
 
@@ -373,7 +449,7 @@ main(int argc, char* argv[])
     {
         f << "nStations,jammer,jammerPower,jammerDistance,channelSwitch,switchChannel,rateAdaptation,jammerDuty,seed,station,distToJammer,"
              "txPackets,rxPackets,throughputMbps,lossRatio,meanDelayMs,sinrDb,retries,drops,"
-             "ccaBusy\n";
+             "ccaBusy,jammerLeakage\n";
     }
     double nan = std::numeric_limits<double>::quiet_NaN();
     Ptr<MobilityModel> jamPos = jammerNode.Get(0)->GetObject<MobilityModel>();
@@ -389,7 +465,7 @@ main(int argc, char* argv[])
           << (rx[i] ? delaySum[i] / rx[i] * 1000 : nan) << ','              // mean delay, ms
           << (g_sinrFrames[i] ? g_sinrSumDb[i] / g_sinrFrames[i] : nan) << ',' // SINR at AP, dB
           << g_retries[i] << ',' << g_drops[i] << ','
-          << double(g_busySamples[i]) / g_samples << '\n';
+          << double(g_busySamples[i]) / g_samples << ',' << jammerLeakage << '\n';
     }
     uint64_t txAll = 0;
     uint64_t rxAll = 0;
@@ -406,12 +482,13 @@ main(int argc, char* argv[])
         std::ofstream t(tl, std::ios::app);
         if (newTl)
         {
+            // switchTime = when the network actually switched (s), -1 = it never did
             t << "nStations,jammerPower,jammerDistance,switchChannel,switchTime,seed,second,rxPackets\n";
         }
         for (size_t s = 0; s + 1 < g_rxCum.size(); ++s)
         {
             t << nStations << ',' << jammerPowerDbm << ',' << jammerDistance << ','
-              << switchChannel << ',' << switchTime << ',' << seed << ',' << s << ','
+              << switchChannel << ',' << g_switchedAt << ',' << seed << ',' << s << ','
               << g_rxCum[s + 1] - g_rxCum[s] << '\n'; // packets received in [s, s+1)
         }
     }

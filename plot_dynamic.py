@@ -3,8 +3,10 @@
 Usage: python3 plot_dynamic.py [results_dynamic_timeline.csv]
 Writes dynamic_timeline.png: packets received per second at the AP, one panel per jammer power and
 distance, one line per target channel (mean over seeds, band = std). The jammer starts at 1 s and
-the whole network moves to the new channel at the switch time.
+the whole network moves to the new channel once the AP detects the jamming (switchTime per run in
+the CSV, -1 if it never switched; the dashed line is the mean switch time of the panel).
 Writes dynamic_summary.csv with, per case (mean over seeds):
+  switchTime        when the network switched (mean over runs that switched); switchedRuns counts them
   lostBeforeSwitch  packets lost between the jammer starting (1 s) and the switch, against the
                     rate the stations offer (5 stations x 1 Mbps / 1024 B packets)
   recoverySec       seconds after the switch until the AP gets >= 90% of the offered rate for two
@@ -31,6 +33,7 @@ def run_stats(run):
     run = run.sort_values("second")
     offered = run.nStations.iloc[0] * RATE_BPS / PKT_BITS  # packets/s the stations offer
     sw = run.switchTime.iloc[0]
+    sw = math.inf if sw < 0 else sw  # never switched: every jammed second counts as "before"
     rx = run.set_index("second").rxPackets
     before = rx[(rx.index >= 1) & (rx.index < sw)]  # seconds with the jammer on, still on ch 1
     lost = float((offered - before).clip(lower=0).sum())
@@ -41,13 +44,15 @@ def run_stats(run):
             rec = s - sw
             break
     after = rx[rx.index >= math.ceil(sw) + 1]
-    return pd.Series({"lostBeforeSwitch": lost, "recoverySec": rec,
+    return pd.Series({"switchTime": sw if sw < math.inf else math.nan,
+                      "lostBeforeSwitch": lost, "recoverySec": rec,
                       "deliveredAfterPct": 100 * after.mean() / offered if len(after) else math.nan})
 
 
 runs = tl.groupby(KEYS + ["seed"]).apply(run_stats, include_groups=False).reset_index()
 summ = runs.groupby(KEYS).agg(
     seeds=("seed", "count"),
+    switchTime=("switchTime", "mean"), switchedRuns=("switchTime", "count"),
     lostBeforeSwitch=("lostBeforeSwitch", "mean"), lostStd=("lostBeforeSwitch", "std"),
     recoverySec=("recoverySec", "mean"), recoveredRuns=("recoverySec", "count"),
     deliveredAfterPct=("deliveredAfterPct", "mean")).round(2).reset_index()
@@ -56,7 +61,6 @@ print(summ.to_string(index=False))
 
 powers = sorted(tl.jammerPower.unique())
 dists = sorted(tl.jammerDistance.unique())
-sw = tl.switchTime.iloc[0]
 offered = tl.nStations.iloc[0] * RATE_BPS / PKT_BITS
 
 fig, axes = plt.subplots(len(powers), len(dists), figsize=(3.6 * len(dists), 2.6 * len(powers)),
@@ -73,7 +77,10 @@ for i, pw in enumerate(powers):
             ax.fill_between(g.index, g["mean"] - g["std"], g["mean"] + g["std"], step="post",
                             color=COLORS.get(ch, "gray"), alpha=0.18, lw=0)
         ax.axhline(offered, color="#8a8a85", ls=":", lw=1)
+        sw = runs[(runs.jammerPower == pw) & (runs.jammerDistance == d)].switchTime.mean()
         for x, name in ((1, "jammer on"), (sw, "switch")):
+            if math.isnan(x):  # no run in this panel switched
+                continue
             ax.axvline(x, color="#8a8a85", ls="--", lw=1)
             if i == 0 and j == 0:  # name the two events once, inside the first panel
                 ax.annotate(name, xy=(x, 1), xycoords=("data", "axes fraction"),
@@ -89,7 +96,7 @@ for i, pw in enumerate(powers):
         ax.grid(alpha=0.3)
 h, lab = axes[0][0].get_legend_handles_labels()
 fig.legend(h, lab, loc="lower center", ncol=len(lab), frameon=False)
-fig.suptitle(f"Jammed on ch 1, then the network switches at {sw:g} s (dotted = offered rate)")
+fig.suptitle("Jammed on ch 1; the network switches once the AP detects it (dotted = offered rate)")
 fig.tight_layout(rect=(0, 0.05, 1, 0.97))
 fig.savefig("dynamic_timeline.png", dpi=150)
 print("wrote dynamic_timeline.png and dynamic_summary.csv")

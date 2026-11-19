@@ -9,7 +9,8 @@ results.csv       jammer distance 10-100 m x 1/5/10 stations x seeds, for
                       or Minstrel-HT rate adaptation                     (T5)
 results_duty.csv  10 m jammer, 5 stations, jammer on-fraction 0-100% of a 100 ms cycle
 results_dynamic.csv, results_dynamic_timeline.csv
-                  jammed on ch 1 first, then the whole network switches mid-run to ch 3 or ch 6
+                  jammed on ch 1 first; once the AP detects the jamming (a second with under half
+                  the offered packets) the whole network switches mid-run to ch 3 or ch 6
                   (5 stations, 3 jammer powers, 3 distances); the timeline has packets/s at the AP
 """
 import argparse
@@ -60,12 +61,10 @@ main += [f"{g} --jammer=off --rateAdaptation=on" for g in grid]  # control for r
 duty = [f"--nStations=5 --seed={s} --jammer=on --jammerPower={POWERS[0]} --jammerDistance=10 "
         f"--jammerPeriod=0.1 --jammerDuty={dc}"
         for dc in (0.0, 0.5, 0.8, 0.9, 0.95, 0.99, 1.0) for s in SEEDS]
-# Dynamic switch: the network starts on ch 1 with the jammer on from 1 s, then moves at SWITCH_TIME.
-# 20 s of the 60 s run; a short dry run (e.g. --sim-time 5) scales it to a third of the run so it
-# still lands inside the traffic period.
-SWITCH_TIME = min(20.0, args.sim_time / 3)
+# Dynamic switch: the network starts on ch 1 with the jammer on from 1 s and moves once the AP
+# detects the jamming (a weak jammer far away may never trigger it, which is the right answer).
 dynamic = [f"--nStations=5 --seed={s} --jammer=on --jammerPower={pw} --jammerDistance={d} "
-           f"--channelSwitch=on --switchChannel={ch} --switchTime={SWITCH_TIME}"
+           f"--channelSwitch=on --switchChannel={ch} --detectSwitch=on"
            for pw in POWERS for ch in (3, 6) for d in (10, 30, 60) for s in SEEDS]
 
 
