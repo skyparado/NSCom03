@@ -43,7 +43,7 @@ def run_stats(run):
         if ok.get(s, False) and ok.get(s + 1, True):  # two good seconds in a row (or the last one)
             rec = s - sw
             break
-    after = rx[rx.index >= math.ceil(sw) + 1]
+    after = rx[rx.index >= math.ceil(sw) + 1] if sw < math.inf else rx.iloc[:0]
     return pd.Series({"switchTime": sw if sw < math.inf else math.nan,
                       "lostBeforeSwitch": lost, "recoverySec": rec,
                       "deliveredAfterPct": 100 * after.mean() / offered if len(after) else math.nan})
