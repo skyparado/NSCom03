@@ -52,8 +52,8 @@ def finish(fig, axes, title, fname, xlabel="Jammer distance from AP (m)"):
 
 
 def label(r):
-    if r.jammer == 0:
-        return "No jammer"
+    if r.jammer == 0:  # baseline for whichever variant this run is
+        return "No jammer: " + label(r.copy().set_axis(r.index).where(r.index != "jammer", 1))
     if r.walls and r.jammerMask and r.rateAdaptation and r.traffic == "tcp":
         return "All realistic + switch to ch 6 after 1 s" if r.channelSwitch else "All realistic, no fix"
     if r.switchAt >= 0:
@@ -93,7 +93,8 @@ orig["scenario"] = np.select(
     [orig.jammer == 0, orig.rateAdaptation == 1, (orig.channelSwitch == 1) & (orig.switchChannel == 3),
      orig.channelSwitch == 1],
     ["No jammer", "Rate adaptation", "Brick-wall jammer, ch 3", "Brick-wall jammer, ch 6"], "Original model")
-orig["traffic"], orig["rateMbps"] = "udp", 1.0
+orig["traffic"], orig["rateMbps"], orig["recoveryMs"] = "udp", 1.0, np.nan
+orig = orig[(orig.jammer == 1) | (orig.rateAdaptation == 0)]
 orig.loc[orig.jammer == 0, "scenario"] = "No jammer (original)"
 runs = pd.concat([per_run(real), per_run(orig)], ignore_index=True)
 N5 = runs[runs.nStations == 5]
@@ -105,7 +106,7 @@ summary.round(3).to_csv("summary_realistic.csv")
 print("wrote summary_realistic.csv")
 
 rad = []
-for sc, g in N5[N5.scenario != "No jammer"].groupby("scenario"):
+for sc, g in N5[~N5.scenario.str.startswith("No jammer")].groupby("scenario"):
     loss = g.groupby("jammerDistance").lossPct.mean()
     if len(loss) > 1:
         rad.append((sc, round(radius(loss, 50), 1), round(radius(loss, 5), 1), round(loss.iloc[0], 1)))

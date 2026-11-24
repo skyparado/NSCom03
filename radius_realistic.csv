@@ -1,0 +1,13 @@
+scenario,radius50Pct_m,radius5Pct_m,lossAt10m_pct
+All realistic + switch to ch 6 after 1 s,,33.2,16.4
+"All realistic, no fix",25.3,32.5,100.0
+"Brick-wall jammer, ch 3",54.7,70.0,100.0
+"Brick-wall jammer, ch 6",,,-0.0
+Fixed MCS 0,44.9,,100.0
+"Leaky jammer, ch 3",54.3,69.3,100.0
+"Leaky jammer, ch 6",,17.3,18.2
+Original model,68.1,88.0,100.0
+Rate adaptation,42.8,59.7,100.0
+TCP,70.6,95.1,100.0
+UDP 5 Mbps,96.5,,100.0
+Walls (5 dB each),32.4,39.3,100.0
