@@ -4,6 +4,7 @@
 // Appends one CSV row per station to --out; plot.py aggregates them per run.
 
 #include "ns3/applications-module.h"
+#include "ns3/propagation-loss-model.h"
 #include "ns3/core-module.h"
 #include "ns3/flow-monitor-module.h"
 #include "ns3/internet-module.h"
@@ -22,6 +23,36 @@ using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("WifiJamming");
 
+// Office floor: interior walls cross the jammer's path every wallSpacing metres, starting at the
+// edge of the network's room (x = roomEdge). Each wall crossed adds wallLoss dB. Walls are planes
+// x = roomEdge + k * wallSpacing, so a link's wall count is how many of them lie between its ends.
+class WallLossModel : public PropagationLossModel
+{
+  public:
+    double m_wallLoss = 5.0;     // dB per wall; ns-3 buildings default InternalWallLoss
+    double m_roomEdge = 12.5;    // m; the 10 m station ring sits inside the first room
+    double m_wallSpacing = 10.0; // m between walls
+
+    uint32_t Walls(double xa, double xb) const
+    {
+        auto k = [this](double x) {
+            return x < m_roomEdge ? -1.0 : std::floor((x - m_roomEdge) / m_wallSpacing);
+        };
+        return uint32_t(std::abs(k(xa) - k(xb)));
+    }
+
+  private:
+    double DoCalcRxPower(double txPowerDbm, Ptr<MobilityModel> a, Ptr<MobilityModel> b) const override
+    {
+        return txPowerDbm - m_wallLoss * Walls(a->GetPosition().x, b->GetPosition().x);
+    }
+
+    int64_t DoAssignStreams(int64_t) override
+    {
+        return 0;
+    }
+};
+
 // Per-station Layer 1 / Layer 2 counters, filled by the trace callbacks below.
 std::map<Mac48Address, uint32_t> g_staIndex;
 std::vector<Ptr<WifiPhy>> g_staPhys;
@@ -31,6 +62,9 @@ std::vector<uint32_t> g_retries;
 std::vector<uint32_t> g_drops;
 std::vector<uint32_t> g_busySamples;
 uint32_t g_samples = 0;
+// Channel-switch recovery: time of the switch and of each station's first data frame after it.
+double g_switchTime = -1;
+std::vector<double> g_firstRxAfterSwitch;
 
 // SINR of each data frame the AP decodes. The sniffer's "noise" is rxPower / SINR, so
 // signal - noise is the SINR in dB. Templated on the frequency argument because its type
@@ -57,6 +91,11 @@ OnApSnifferRx(Ptr<const Packet> packet,
     {
         g_sinrSumDb[it->second] += sn.signal - sn.noise;
         g_sinrFrames[it->second]++;
+        double now = Simulator::Now().GetSeconds();
+        if (g_switchTime >= 0 && now >= g_switchTime && std::isnan(g_firstRxAfterSwitch[it->second]))
+        {
+            g_firstRxAfterSwitch[it->second] = now;
+        }
     }
 }
 
@@ -91,6 +130,19 @@ SampleCca(Time stop)
     }
 }
 
+// Move AP and stations to the target channel mid-run (detection delay already elapsed).
+// Stations disassociate on a channel switch in ns-3 and must find the AP again, so the
+// re-association time is part of what is measured.
+void
+SwitchChannel(std::vector<Ptr<WifiPhy>> phys, std::string settings)
+{
+    g_switchTime = Simulator::Now().GetSeconds();
+    for (auto& phy : phys)
+    {
+        phy->SetAttribute("ChannelSettings", StringValue(settings));
+    }
+}
+
 int
 main(int argc, char* argv[])
 {
@@ -111,6 +163,14 @@ main(int argc, char* argv[])
     uint32_t pktSize = 1024;         // bytes
     double rateBps = 1e6;            // per station
     std::string out = "wifi-jamming.csv";
+    // Realism options (test2). All default to the original model.
+    std::string wallsStr = "off";      // interior walls between the jammer and the network
+    double wallLoss = 5.0;             // dB per wall
+    std::string jammerMaskStr = "off"; // on = jammer leaks into adjacent channels (802.11 mask)
+    double switchAt = -1;              // s after jammer start; < 0 = already on new channel at t=0
+    std::string traffic = "udp";       // udp or tcp
+    double rateMbps = 1.0;             // offered load per station
+    uint32_t mcs = 7;                  // fixed HT MCS when rate adaptation is off
 
     CommandLine cmd(__FILE__);
     cmd.AddValue("nStations", "Number of stations", nStations);
@@ -125,6 +185,13 @@ main(int argc, char* argv[])
     cmd.AddValue("jammerPeriod", "Jammer burst cycle (s)", jammerPeriod);
     cmd.AddValue("simTime", "Traffic duration (s)", simTime);
     cmd.AddValue("out", "CSV file to append the result rows to", out);
+    cmd.AddValue("walls", "Interior walls every 10 m beyond the network's room (on/off)", wallsStr);
+    cmd.AddValue("wallLoss", "Attenuation per wall (dB)", wallLoss);
+    cmd.AddValue("jammerMask", "Jammer leaks into adjacent channels per 802.11 mask (on/off)", jammerMaskStr);
+    cmd.AddValue("switchAt", "Switch channel this many s after the jammer starts (<0: from t=0)", switchAt);
+    cmd.AddValue("traffic", "Uplink transport: udp or tcp", traffic);
+    cmd.AddValue("rate", "Offered load per station (Mbps)", rateMbps);
+    cmd.AddValue("mcs", "Fixed HT MCS index (0-7) when rate adaptation is off", mcs);
     cmd.Parse(argc, argv);
 
     // CommandLine parses bool as true/false/1/0, not on/off, so take these as strings.
@@ -136,6 +203,16 @@ main(int argc, char* argv[])
                     "rateAdaptation must be on or off");
     bool channelSwitch = channelSwitchStr == "on";
     bool rateAdaptation = rateAdaptationStr == "on";
+    NS_ABORT_MSG_IF(wallsStr != "on" && wallsStr != "off", "walls must be on or off");
+    NS_ABORT_MSG_IF(jammerMaskStr != "on" && jammerMaskStr != "off", "jammerMask must be on or off");
+    NS_ABORT_MSG_IF(traffic != "udp" && traffic != "tcp", "traffic must be udp or tcp");
+    NS_ABORT_MSG_IF(mcs > 7, "mcs must be 0-7");
+    NS_ABORT_MSG_IF(switchAt >= 0 && !channelSwitch, "switchAt needs channelSwitch=on");
+    bool walls = wallsStr == "on";
+    bool jammerMask = jammerMaskStr == "on";
+    bool delayedSwitch = channelSwitch && switchAt >= 0;
+    rateBps = rateMbps * 1e6;
+    Config::SetDefault("ns3::TcpSocket::SegmentSize", UintegerValue(pktSize));
 
     RngSeedManager::SetSeed(1);
     RngSeedManager::SetRun(seed);
@@ -179,15 +256,21 @@ main(int argc, char* argv[])
     fading->SetAttribute("m1", DoubleValue(1.5));
     fading->SetAttribute("m2", DoubleValue(1.5));
     channel->AddPropagationLossModel(fading);
+    if (walls)
+    {
+        Ptr<WallLossModel> wallModel = CreateObject<WallLossModel>();
+        wallModel->m_wallLoss = wallLoss;
+        channel->AddPropagationLossModel(wallModel);
+    }
     channel->SetPropagationDelayModel(CreateObject<ConstantSpeedPropagationDelayModel>());
 
     SpectrumWifiPhyHelper phy;
     phy.SetChannel(channel);
     // Switch off channel 1 to switchChannel: channel 3 half-overlaps the jammer (partial relief),
     // channel 6/11 are clean (full escape). Comparing them shows what the mitigation actually buys.
-    std::string chSettings = channelSwitch
-                                 ? "{" + std::to_string(switchChannel) + ", 20, BAND_2_4GHZ, 0}"
-                                 : "{1, 20, BAND_2_4GHZ, 0}";
+    std::string target = "{" + std::to_string(switchChannel) + ", 20, BAND_2_4GHZ, 0}";
+    // A delayed switch starts on channel 1 with the jammer, like a real network that has to react.
+    std::string chSettings = channelSwitch && !delayedSwitch ? target : "{1, 20, BAND_2_4GHZ, 0}";
     phy.Set("ChannelSettings", StringValue(chSettings));
     // 802.11 holds CCA busy for energy that is not a decoded Wi-Fi preamble only above -62 dBm.
     // ns-3's default applies -82 dBm to all in-band energy after any frame, so a jammer 20 dB
@@ -208,7 +291,7 @@ main(int argc, char* argv[])
     {
         wifi.SetRemoteStationManager("ns3::ConstantRateWifiManager",
                                      "DataMode",
-                                     StringValue("HtMcs7"),
+                                     StringValue("HtMcs" + std::to_string(mcs)),
                                      "ControlMode",
                                      StringValue("HtMcs0"));
     }
@@ -222,13 +305,50 @@ main(int argc, char* argv[])
 
     // Constant jammer: waveform generator, back-to-back bursts over channel 1 (2402-2422 MHz).
     // It ignores CSMA/CA, unlike a regular Wi-Fi node.
-    BandInfo band;
-    band.fl = 2402e6;
-    band.fc = 2412e6;
-    band.fh = 2422e6;
-    Bands bands{band};
+    // Brick wall (default): all power flat inside 2402-2422 MHz, nothing outside.
+    // Mask: 1 MHz bins over 2372-2452 MHz shaped by the 802.11 OFDM transmit mask
+    // (0 dBr to +-9 MHz, -20 at +-11, -28 at +-20, -40 at +-30 and beyond), so a real-looking
+    // jammer leaks into channels 2-7. Total power is still jammerPower.
+    Bands bands;
+    std::vector<double> rel; // linear relative PSD per bin
+    if (jammerMask)
+    {
+        for (double f = 2372e6; f < 2452e6; f += 1e6)
+        {
+            BandInfo b;
+            b.fl = f;
+            b.fc = f + 0.5e6;
+            b.fh = f + 1e6;
+            bands.push_back(b);
+            double off = std::abs(b.fc - 2412e6) / 1e6;
+            double dbr = off <= 9    ? 0
+                         : off <= 11 ? -20 * (off - 9) / 2
+                         : off <= 20 ? -20 - 8 * (off - 11) / 9
+                         : off <= 30 ? -28 - 12 * (off - 20) / 10
+                                     : -40;
+            rel.push_back(std::pow(10.0, dbr / 10));
+        }
+    }
+    else
+    {
+        BandInfo band;
+        band.fl = 2402e6;
+        band.fc = 2412e6;
+        band.fh = 2422e6;
+        bands.push_back(band);
+        rel.push_back(1.0);
+    }
     Ptr<SpectrumValue> psd = Create<SpectrumValue>(Create<SpectrumModel>(bands));
-    *psd = std::pow(10.0, (jammerPowerDbm - 30) / 10) / 20e6; // W/Hz
+    double relSum = 0;
+    for (uint32_t k = 0; k < bands.size(); ++k)
+    {
+        relSum += rel[k] * (bands[k].fh - bands[k].fl);
+    }
+    double jamW = std::pow(10.0, (jammerPowerDbm - 30) / 10);
+    for (uint32_t k = 0; k < bands.size(); ++k)
+    {
+        (*psd)[k] = jamW * rel[k] / relSum; // W/Hz
+    }
     WaveformGeneratorHelper wg;
     wg.SetChannel(channel);
     wg.SetTxPowerSpectralDensity(psd);
@@ -250,6 +370,7 @@ main(int argc, char* argv[])
     g_retries.assign(nStations, 0);
     g_drops.assign(nStations, 0);
     g_busySamples.assign(nStations, 0);
+    g_firstRxAfterSwitch.assign(nStations, std::numeric_limits<double>::quiet_NaN());
     for (uint32_t i = 0; i < nStations; ++i)
     {
         Ptr<WifiNetDevice> dev = DynamicCast<WifiNetDevice>(staDevs.Get(i));
@@ -267,6 +388,12 @@ main(int argc, char* argv[])
         ->GetPhy()
         ->TraceConnectWithoutContext("MonitorSnifferRx", MakeCallback(sniffer));
     Simulator::Schedule(Seconds(1.0), &SampleCca, Seconds(1.0 + simTime));
+    if (delayedSwitch)
+    {
+        std::vector<Ptr<WifiPhy>> allPhys = g_staPhys;
+        allPhys.push_back(DynamicCast<WifiNetDevice>(apDev.Get(0))->GetPhy());
+        Simulator::Schedule(Seconds(1.0 + switchAt), &SwitchChannel, allPhys, target);
+    }
 
     InternetStackHelper stack;
     stack.Install(apNode);
@@ -277,16 +404,29 @@ main(int argc, char* argv[])
     Ipv4InterfaceContainer staIf = addr.Assign(staDevs);
 
     uint16_t port = 9;
-    UdpServerHelper server(port);
-    ApplicationContainer serverApp = server.Install(apNode);
+    ApplicationContainer serverApp;
+    ApplicationContainer clientApps;
+    if (traffic == "udp")
+    {
+        UdpServerHelper server(port);
+        serverApp = server.Install(apNode);
+        UdpClientHelper client(apIf.GetAddress(0), port);
+        client.SetAttribute("MaxPackets", UintegerValue(std::numeric_limits<uint32_t>::max()));
+        client.SetAttribute("Interval", TimeValue(Seconds(pktSize * 8 / rateBps)));
+        client.SetAttribute("PacketSize", UintegerValue(pktSize));
+        clientApps = client.Install(staNodes);
+    }
+    else
+    {
+        // TCP at the same offered rate: segments of pktSize, retransmitted by TCP when lost.
+        PacketSinkHelper sink("ns3::TcpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), port));
+        serverApp = sink.Install(apNode);
+        OnOffHelper client("ns3::TcpSocketFactory", InetSocketAddress(apIf.GetAddress(0), port));
+        client.SetConstantRate(DataRate(uint64_t(rateBps)), pktSize);
+        clientApps = client.Install(staNodes);
+    }
     serverApp.Start(Seconds(0.5));
     serverApp.Stop(Seconds(simTime + 2));
-
-    UdpClientHelper client(apIf.GetAddress(0), port);
-    client.SetAttribute("MaxPackets", UintegerValue(std::numeric_limits<uint32_t>::max()));
-    client.SetAttribute("Interval", TimeValue(Seconds(pktSize * 8 / rateBps)));
-    client.SetAttribute("PacketSize", UintegerValue(pktSize));
-    ApplicationContainer clientApps = client.Install(staNodes);
     clientApps.Start(Seconds(1.0));
     clientApps.Stop(Seconds(1.0 + simTime));
 
@@ -309,7 +449,10 @@ main(int argc, char* argv[])
     for (const auto& [id, st] : monitor->GetFlowStats())
     {
         uint32_t i = classifier->FindFlow(id).sourceAddress.Get() - staIf.GetAddress(0).Get();
-        NS_ASSERT_MSG(i < nStations, "flow from an unknown source");
+        if (i >= nStations)
+        {
+            continue; // TCP ACK flows from the AP back to the stations
+        }
         tx[i] += st.txPackets;
         rx[i] += st.rxPackets;
         delaySum[i] += st.delaySum.GetSeconds();
@@ -321,7 +464,7 @@ main(int argc, char* argv[])
     {
         f << "nStations,jammer,jammerPower,jammerDistance,channelSwitch,switchChannel,rateAdaptation,jammerDuty,seed,station,distToJammer,"
              "txPackets,rxPackets,throughputMbps,lossRatio,meanDelayMs,sinrDb,retries,drops,"
-             "ccaBusy\n";
+             "ccaBusy,walls,jammerMask,traffic,rateMbps,mcs,switchAt,recoveryMs\n";
     }
     double nan = std::numeric_limits<double>::quiet_NaN();
     Ptr<MobilityModel> jamPos = jammerNode.Get(0)->GetObject<MobilityModel>();
@@ -337,7 +480,10 @@ main(int argc, char* argv[])
           << (rx[i] ? delaySum[i] / rx[i] * 1000 : nan) << ','              // mean delay, ms
           << (g_sinrFrames[i] ? g_sinrSumDb[i] / g_sinrFrames[i] : nan) << ',' // SINR at AP, dB
           << g_retries[i] << ',' << g_drops[i] << ','
-          << double(g_busySamples[i]) / g_samples << '\n';
+          << double(g_busySamples[i]) / g_samples << ','
+          << walls << ',' << jammerMask << ',' << traffic << ',' << rateMbps << ','
+          << (rateAdaptation ? -1 : int(mcs)) << ',' << switchAt << ','
+          << (g_switchTime >= 0 ? (g_firstRxAfterSwitch[i] - g_switchTime) * 1000 : nan) << '\n';
     }
     uint64_t txAll = 0;
     uint64_t rxAll = 0;
