@@ -1,103 +1,115 @@
 # Interference and Jamming Mitigation in Wi-Fi Networks Using ns-3
 
-NSS S40B, Group 6. One 802.11n AP with 1/5/10 stations on a 10 m ring (2.4 GHz, channel 1) and a
-constant jammer (waveform generator on channel 1) placed 10 to 100 m from the AP. The jammer is
-run at three powers, and three mitigations are tested against the strongest one: switching to a
-half-overlapping channel (3), switching to a clean channel (6), and rate adaptation.
+NSS S40B, Group 6: Austria, Campos, Patricio, Parado.
 
-Results and their interpretation are in [findings.md](findings.md).
+An ns-3 simulation of one IEEE 802.11n access point with 1, 5 or 10 stations on 2.4 GHz
+(channel 1) and a constant jammer placed 10 to 100 m from the AP at 16, 23 or 30 dBm.
+Mitigations tested: switching to channel 3 (half overlap), switching to channel 6 (clean),
+and Minstrel-HT rate adaptation. Test 2 repeats the study with walls, a leaky jammer,
+delayed channel switching, and TCP / heavier traffic.
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `wifi-jamming.cc` | ns-3 simulation; one run, appends one CSV row per station |
+| `ns3-cca-busy-fix.patch` | one-line ns-3 fix needed for 1 ms jammer bursts |
+| `run_all.py` | builds the simulation and runs every case in parallel |
+| `plot.py` | Test 1 figures and tables from `results.csv` |
+| `plot_duty.py` | pulsed-jammer figure from `results_duty.csv` |
+| `plot_realistic.py` | Test 2 figures and tables from `results_realistic.csv` |
 
 ## Requirements
 
-- ns-3 **3.40 or newer** (the code uses the `ChannelSettings` string format from 3.40).
-  Results were produced with ns-3-dev at `ns-3.48-192-g9611dfcb5`, optimized build.
-- **One-line ns-3 fix, `ns3-cca-busy-fix.patch`.** Stock ns-3 aborts ("Invalid WifiPhy state RX")
-  or hangs in this scenario; see "ns-3 fix" below. Apply once: `git -C ~/ns-3-dev apply ns3-cca-busy-fix.patch`.
-  `run_all.py` refuses to start without it.
-- Python 3 with `pandas` and `matplotlib`.
+- ns-3.40 or newer (results were produced on ns-3-dev 3.48, optimized build)
+- Python 3 with `pandas` and `matplotlib` (`pip install -r requirements.txt`)
+
+## Setup (once)
+
+```bash
+git -C ~/ns-3-dev apply "$PWD/ns3-cca-busy-fix.patch"
+(cd ~/ns-3-dev && ./ns3 configure --build-profile=optimized)
+python3 -m venv ~/venv && ~/venv/bin/pip install -r requirements.txt
+```
+
+On WSL, system-wide `pip` is blocked, so use the venv as shown.
 
 ## Run
 
-```sh
-git -C ~/ns-3-dev apply "$PWD/ns3-cca-busy-fix.patch"      # once
-(cd ~/ns-3-dev && ./ns3 configure --build-profile=optimized)
-
-# everything: copies wifi-jamming.cc into scratch/, builds, runs 1,930 simulations in parallel
-python3 run_all.py --ns3-dir ~/ns-3-dev --out results.csv   # add --sim-time 5 --seeds 2 for a dry run
+```bash
+python3 run_all.py --ns3-dir ~/ns-3-dev --out results.csv
+python3 run_all.py --ns3-dir ~/ns-3-dev --realistic
 python3 plot.py results.csv
 python3 plot_duty.py results_duty.csv
-
-# or a single run by hand
-cp wifi-jamming.cc ~/ns-3-dev/scratch/
-./ns3 run "wifi-jamming --nStations=5 --jammer=on --jammerPower=30 --jammerDistance=60 --simTime=5 --out=/tmp/test.csv"
+python3 plot_realistic.py results_realistic.csv results.csv
 ```
 
-## Experiment design
+The first command runs 1,930 simulations (Test 1 and the pulsed jammer) and takes about
+70 minutes on 8 cores. The second runs the 990 Test 2 simulations. Add `--sim-time 5 --seeds 2`
+for a quick dry run.
 
-Every case is 60 s of traffic, 10 seeds, 1 Mbps UDP per station (1024-byte packets) to the AP.
+A single run by hand:
 
-| Proposal case | What is run | Where to look |
+```bash
+cp wifi-jamming.cc ~/ns-3-dev/scratch/
+cd ~/ns-3-dev
+./ns3 run "wifi-jamming --nStations=5 --jammer=on --jammerPower=30 --jammerDistance=60 --simTime=5 --out=test.csv"
+```
+
+## Command-line options
+
+| Option | Default | Meaning |
 |---|---|---|
-| T1 baseline | no jammer, N = 1/5/10 (also with rate adaptation, as a control) | dashed line in every figure |
-| T2 constant jammer | jammer on channel 1 at 16, 23 and 30 dBm | `rq1_rq3_distance.png` |
-| T3 load | N = 1/5/10 at every power and distance | `rq2_load.png` |
-| T4 distance | jammer 10, 20, ... 100 m from the AP (was near/far only) | `rq1_rq3_distance.png` |
-| T5 mitigation | 30 dBm jammer; BSS moved to channel 3 or channel 6, or Minstrel-HT rate adaptation | `rq4_mitigation.png` |
-| extra: pulsed jammer | 10 m, N = 5, jammer on 0-100% of a 100 ms cycle | `duty_response.png` |
+| `--nStations` | 5 | number of stations on a 10 m ring around the AP |
+| `--jammer` | on | constant jammer on/off |
+| `--jammerPower` | 16.02 | jammer power (dBm) |
+| `--jammerDistance` | 10 | jammer distance from the AP (m) |
+| `--jammerDuty`, `--jammerPeriod` | 1.0, 0.001 | jammer on-fraction and burst cycle (s) |
+| `--channelSwitch`, `--switchChannel` | off, 3 | move the network to another channel |
+| `--switchAt` | -1 | switch this many seconds after the jammer starts (-1 = from the start) |
+| `--rateAdaptation` | off | Minstrel-HT instead of a fixed rate |
+| `--mcs` | 7 | fixed HT MCS when rate adaptation is off |
+| `--walls`, `--wallLoss` | off, 5 | 5 dB wall every 10 m beyond 12.5 m |
+| `--jammerMask` | off | jammer leaks into adjacent channels (802.11 OFDM mask) |
+| `--traffic`, `--rate` | udp, 1 | transport and offered load per station (Mbps) |
+| `--simTime`, `--seed`, `--out` | 60, 1, wifi-jamming.csv | duration (s), RNG run, output CSV |
 
-Jammer powers: **16 dBm** is the ns-3 default Wi-Fi Tx power (the proposal's jammer: as strong as
-one station); **23 dBm** is 200 mW; **30 dBm** is 1 W, a typical handheld jammer.
+## Test cases
+
+| Case | Setup |
+|---|---|
+| T1 | no jammer, N = 1/5/10 (also with rate adaptation) |
+| T2 | jammer on channel 1 at 16, 23, 30 dBm |
+| T3 | N = 1/5/10 at every power and distance |
+| T4 | jammer 10 to 100 m from the AP in 10 m steps |
+| T5 | 30 dBm jammer; channel 3, channel 6, or rate adaptation |
+| Extra | pulsed jammer, 0 to 100% of a 100 ms cycle |
+| Test 2 | walls, leaky jammer, switch after 0.1 to 5 s, TCP, 5 Mbps, MCS 0, all combined |
+
+Each case: 60 s of traffic, 10 seeds, 1 Mbps UDP per station (1024-byte packets).
 
 ## Outputs
 
 | File | Contents |
 |---|---|
-| `results.csv` | one row per station per run: packets, throughput, loss, delay, SINR at AP, MAC retries/drops, CCA-busy fraction, distance to jammer |
-| `summary.csv` | mean and std of every metric per scenario, jammer power, distance and station count; `runsWithDelivery` = runs where any packet arrived (delay/SINR average only those) |
-| `denial_radius.csv` | distance at which mean loss falls through 50% ("denial radius") and 5%, per scenario, power and station count; empty = never crosses inside 10-100 m |
-| `recovery.csv` | RQ4: % of the jammer's damage each mitigation wins back (100% = baseline), per distance and station count; empty = the jammer did no damage there |
-| `rq1_rq3_distance.png` | throughput, loss and delay vs jammer distance, one line per jammer power |
-| `rq2_load.png` | loss and delay vs distance for 1/5/10 stations, one column per jammer power |
-| `l1_l2.png` | loss vs signal-to-jammer ratio at the AP, SINR of decoded frames, MAC retries per packet (Objective 6) |
-| `rq4_mitigation.png` | delivery and delay vs distance per mitigation, and the denial radius per station count |
-| `duty_response.png` | loss and throughput vs jammer on-fraction |
+| `results.csv`, `results_duty.csv`, `results_realistic.csv` | raw per-station rows: packets, throughput, loss, delay, SINR, retries, drops, CCA busy time |
+| `summary.csv`, `summary_realistic.csv` | mean and standard deviation per scenario |
+| `denial_radius.csv`, `radius_realistic.csv` | distance where mean loss crosses 50% and 5% |
+| `recovery.csv` | share of the jammer's damage each mitigation recovers |
+| `rq1_rq3_distance.png`, `rq2_load.png`, `l1_l2.png`, `rq4_mitigation.png` | Test 1 figures |
+| `duty_response.png` | pulsed jammer |
+| `realistic_env.png`, `switch_time.png`, `all_realistic.png` | Test 2 figures |
 
-## Modeling notes (state these in the paper)
+## Model notes
 
-- **Path loss and fading.** Log-distance, exponent 3, reference loss 40.05 dB at 1 m (2.4 GHz free
-  space; the ns-3 default is the 5 GHz value), plus Nakagami fading with m = 1.5 at every distance.
-  Each Wi-Fi frame and each jammer burst gets an independent fading draw.
-- **Station layout.** The 10 m ring is rotated by a random angle per seed. With a fixed layout a
-  single station always sat on the side away from the jammer, which made "N = 1" look more robust
-  for a reason that had nothing to do with load. A seed gives the same layout in every scenario.
-- **Jammer.** Flat noise over channel 1 (2402-2422 MHz), sent as back-to-back 1 ms bursts so that
-  it fades frame by frame like the Wi-Fi links. It does no carrier sensing.
-- **Carrier sensing (`CcaSensitivity` = -62 dBm).** 802.11 holds CCA busy for energy that is not a
-  decoded Wi-Fi preamble only above -62 dBm (energy detect). ns-3's default instead applies the
-  -82 dBm preamble threshold to all in-band energy after any Wi-Fi frame, jammer noise included,
-  and holds CCA until that energy drops, i.e. until the current jammer burst ends. With that
-  default (the earlier version of this code) the burst length, not the physics, decided the loss
-  between 30 and 90 m: in a calibration test (N = 5, 20 s, 2 seeds) changing only the burst
-  length moved the 50%-loss distance of a 16 dBm jammer from about 23 m (1 ms) to 51 m (100 ms)
-  to 88 m (1 s). With -62 dBm the loss curve is nearly the same for 1, 10 and 100 ms bursts, the
-  no-jammer baseline is unchanged, and `ccaBusy` is a plain energy-detect reading.
-- **ns-3 fix.** `WifiPhyStateHelper::SwitchMaybeToCcaBusy` sets the end of the busy period to
-  `now + duration` even when a longer busy period is already running. A new indication (each
-  jammer burst start causes one) can therefore end CCA-busy in the middle of a PHY header, the PHY
-  goes idle while still decoding, accepts a second frame, and ns-3 then aborts in `SwitchToRx` or
-  loops forever. The patch changes that line to keep the later of the two end times. Seen on
-  ns-3-dev `9611dfcb5`; before the fix 4 of 24 ten-station test runs with a 16 dBm jammer
-  aborted within 10 s, after it 190 of 190 test runs and all 1,930 runs of the study finished.
-- **Rate.** Fixed `HtMcs7` data / `HtMcs0` control by default, as in the proposal's scope.
-  `--rateAdaptation=on` uses `MinstrelHtWifiManager` instead.
-- **Channel switching** is idealized: the BSS is on the new channel from t = 0; detection time and
-  switching overhead are not modeled. Channel 3 overlaps half of the jammer's band; channel 6
-  overlaps none of it, and the jammer has no out-of-band leakage in this model.
-- **Pulsed jammer** (`--jammerDuty`, `--jammerPeriod`): `run_all.py` uses a 100 ms cycle at 10 m.
-- Jammer and traffic start at t = 1 s, after association; packets still queued 1 s after traffic
-  stops count as lost. Throughput counts UDP payload only.
-- SINR is measured only on frames the AP decoded, so it is biased high and missing when nothing
-  gets through. `l1_l2.png` therefore also plots loss against the mean signal-to-jammer ratio
-  computed from the path-loss model, which has no such bias.
-- Retries count ACK timeouts; MPDUs lost inside a Block-Ack'ed A-MPDU are not counted.
-- The denial radius is interpolated linearly between 10 m grid points.
+- Path loss: log-distance, exponent 3, 40.05 dB at 1 m (2.4 GHz), plus Nakagami fading (m = 1.5).
+- Jammer: `WaveformGenerator` sending back-to-back 1 ms bursts of flat noise over 2402 to 2422 MHz.
+  It does not use carrier sensing.
+- Carrier sensing for non-Wi-Fi energy uses the 802.11 energy-detect level of -62 dBm.
+- The station ring is rotated randomly per seed; the same seed gives the same layout in every scenario.
+- Channel switching in T5 is ideal (on the new channel from t = 0). Test 2 adds a delay and re-association.
+- SINR is measured only on frames the AP decoded. Retries count ACK timeouts only.
+- Denial radius is linearly interpolated between the 10 m grid points.
+- **ns-3 fix:** `WifiPhyStateHelper::SwitchMaybeToCcaBusy` could shorten a CCA-busy period that was
+  already running, which left the PHY idle mid-reception and made ns-3 abort or hang under
+  frequent jammer bursts. The patch keeps the later end time. `run_all.py` will not start without it.

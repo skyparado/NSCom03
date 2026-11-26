@@ -1,26 +1,10 @@
-"""Plot the test2 realism runs (results_realistic.csv) against the original model (results.csv).
-
-Usage: python3 plot_realistic.py [results_realistic.csv] [results.csv]
-Writes
-  realistic_env.png        walls, leaky jammer, and traffic/rate, each vs the original model
-  switch_time.png          loss and recovery time when the channel switch happens 0.1-5 s late
-  all_realistic.png        every realism option at once, with and without a late switch
-  summary_realistic.csv    mean/std per scenario, distance, station count
-  radius_realistic.csv     denial radius (50% and 5% loss) per scenario
-All curves: 30 dBm jammer, 5 stations unless stated, mean of 10 seeds with std bars.
-Service = application throughput as % of the offered load, so UDP, TCP and 5 Mbps compare.
-"""
 import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Same helpers as plot.py (copied: plot.py does its work at import time).
 def radius(loss, level):
-    """Distance where mean loss (a Series indexed by distance) falls through `level` %.
-
-    Linear interpolation between grid points; NaN if it never crosses inside the grid."""
     d, y = loss.index.to_numpy(float), loss.to_numpy(float)
     k = np.where((y[:-1] >= level) & (y[1:] < level))[0]
     if not len(k):
@@ -52,7 +36,7 @@ def finish(fig, axes, title, fname, xlabel="Jammer distance from AP (m)"):
 
 
 def label(r):
-    if r.jammer == 0:  # baseline for whichever variant this run is
+    if r.jammer == 0:
         return "No jammer: " + label(r.copy().set_axis(r.index).where(r.index != "jammer", 1))
     if r.walls and r.jammerMask and r.rateAdaptation and r.traffic == "tcp":
         return "All realistic + switch to ch 6 after 1 s" if r.channelSwitch else "All realistic, no fix"
@@ -121,7 +105,6 @@ def curves(ax, names, col="servicePct"):
         line(ax, N5[N5.scenario == name], col, color=c, label=name)
 
 
-# Figure 1: one realism factor at a time vs the original model.
 fig, axes = plt.subplots(1, 3, figsize=(15, 4.6))
 curves(axes[0], [("Original model", "#eb6834"), ("Walls (5 dB each)", "#1baf7a")])
 axes[0].set_title("Walls between jammer and network")
@@ -143,7 +126,6 @@ fig.savefig("realistic_env.png", dpi=150)
 plt.close(fig)
 print("wrote realistic_env.png")
 
-# Figure 2: late channel switch, jammer 10 m from the AP.
 sw = runs[runs.scenario.str.startswith("Switch to ch 6 after")].copy()
 sw["switchAt"] = sw.scenario.str.extract(r"after ([\d.]+) s").astype(float)
 fig, axes = plt.subplots(1, 2, figsize=(11, 4.4))
@@ -164,7 +146,6 @@ for ax in axes:
 finish(fig, axes, "Test 2: switching to ch 6 takes time (30 dBm jammer at 10 m)", "switch_time.png",
        xlabel="Time before switching: detection + decision (s)")
 
-# Figure 3: everything at once.
 fig, axes = plt.subplots(1, 2, figsize=(11, 4.4))
 for name, c in [("Original model", "#eb6834"), ("All realistic, no fix", "#a8201a"),
                 ("All realistic + switch to ch 6 after 1 s", "#1baf7a")]:
